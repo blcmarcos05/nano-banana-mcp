@@ -3,20 +3,12 @@ import { config } from "./config.js";
 import { FlowError } from "./types.js";
 import { M } from "./i18n.js";
 
-// Google migró Flow de labs.google/fx/tools/flow a flow.google.com/project.
-// Aceptamos ambos: el dominio nuevo (donde vive todo hoy) y el viejo por si
-// alguna pestaña quedó ahí. La ruta de proyecto perdió el prefijo /tools/flow/.
 const FLOW_HOSTS = ["flow.google.com", "labs.google"];
 const isFlowUrl = (u: string) => FLOW_HOSTS.some((h) => u.includes(h));
 const PROJECT_RE = /\/(?:tools\/flow\/)?project\/([0-9a-f-]{36})/i;
 
 let browser: Browser | null = null;
 
-/**
- * Nos enganchamos a un Chrome que ya está corriendo con --remote-debugging-port.
- * Nunca lanzamos uno propio ni pedimos credenciales: la sesión es la que la
- * persona abrió a mano, y este proceso solo la usa prestada.
- */
 async function attach(): Promise<BrowserContext> {
   if (!browser || !browser.isConnected()) {
     try {
@@ -28,6 +20,7 @@ async function attach(): Promise<BrowserContext> {
       );
     }
   }
+
   const ctx = browser.contexts()[0];
   if (!ctx) throw new FlowError(M.noContext());
   return ctx;
@@ -39,7 +32,6 @@ export interface FlowTab {
   projectId: string | null;
 }
 
-/** Ubica la pestaña de Flow. Si hay un proyecto abierto, la prefiere. */
 export async function getFlowTab(): Promise<FlowTab> {
   const context = await attach();
   const pages = context.pages().filter((p) => isFlowUrl(p.url()));
@@ -48,53 +40,61 @@ export async function getFlowTab(): Promise<FlowTab> {
     throw new FlowError(M.noFlowTab(), M.noFlowTabHint());
   }
 
-  // Una pestaña dentro de un proyecto es la única donde existe el compositor.
   const page = pages.find((p) => PROJECT_RE.test(p.url())) ?? pages[0]!;
-  return { page, context, projectId: PROJECT_RE.exec(page.url())?.[1] ?? null };
+
+  return {
+    page,
+    context,
+    projectId: PROJECT_RE.exec(page.url())?.[1] ?? null,
+  };
 }
 
-/**
- * Todas las pestañas que tienen un proyecto abierto.
- *
- * Una por hilo es lo que habilita generar en paralelo: el cuello de botella no
- * es la red sino el compositor, que es un único elemento por pestaña.
- */
 export async function listFlowTabs(): Promise<FlowTab[]> {
   const context = await attach();
+
   return context
     .pages()
     .filter((p) => isFlowUrl(p.url()) && PROJECT_RE.test(p.url()))
-    .map((page) => ({ page, context, projectId: PROJECT_RE.exec(page.url())?.[1] ?? null }));
+    .map((page) => ({
+      page,
+      context,
+      projectId: PROJECT_RE.exec(page.url())?.[1] ?? null,
+    }));
 }
 
-/**
- * Garantiza al menos `n` pestañas con el proyecto abierto, clonando la primera
- * si faltan. Devuelve exactamente `n`.
- */
 export async function ensureFlowTabs(n: number): Promise<FlowTab[]> {
   const existing = await listFlowTabs();
   const first = existing[0];
+
   if (!first) {
     throw new FlowError(M.noProjectTab(), M.noProjectTabHint());
   }
 
   const tabs = [...existing];
+
   while (tabs.length < n) {
     const page = await first.context.newPage();
-    await page.goto(first.page.url(), { waitUntil: "domcontentloaded", timeout: 60_000 });
-    // React monta el compositor despues del load; sin esta espera el primer
-    // prompt de esa pestaña se escribiria en el vacio.
-    await page.waitForSelector('[contenteditable="true"]', { timeout: 60_000 });
-    tabs.push({ page, context: first.context, projectId: first.projectId });
+
+    await page.goto(first.page.url(), {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
+    });
+
+    await page.waitForSelector(
+      'input[aria-label="Texto editable"], [contenteditable="true"]',
+      { timeout: 60_000 },
+    );
+
+    tabs.push({
+      page,
+      context: first.context,
+      projectId: first.projectId,
+    });
   }
+
   return tabs.slice(0, n);
 }
 
-/**
- * Estado de sesión y saldo, leídos por API en vez de raspando el DOM.
- * Ambas llamadas corren dentro de la pestaña, así que la cookie la pone el
- * navegador y nosotros no vemos ningún token.
- */
 export interface Status {
   connected: boolean;
   signedIn: boolean;
@@ -109,11 +109,38 @@ export async function readStatus(): Promise<Status> {
   const { page, projectId } = await getFlowTab();
 
   const account = await page
-    .evaluate(async () => {
-      const r = await fetch("/fx/api/auth/session", { credentials: "include" });
-      if (!r.ok) return null;
-      const j = (await r.json()) as { user?: { email?: string } };
-      return j?.user?.email ?? null;
+    .evaluate(() => {
+      const elements = [
+        ...document.querySelectorAll(
+          '[aria-label^="Cuenta de Google:"], [aria-label^="Google Account:"]',
+        ),
+      ];
+
+      for (const el of elements) {
+        const value =
+          el.getAttribute("aria-label") ??
+          el.getAttribute("data-email") ??
+          el.getAttribute("alt") ??
+          "";
+
+        const match = value.match(
+          /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
+        );
+
+        if (match) return match[0];
+      }
+
+      // En la interfaz actual de Flow, este elemento identifica la cuenta
+      // autenticada aunque el correo no esté expuesto directamente.
+      const hasGoogleAccountControl = Boolean(
+        document.querySelector(
+          '[aria-label^="Cuenta de Google:"], [aria-label^="Google Account:"]',
+        ),
+      );
+
+      if (hasGoogleAccountControl) return "flow-session";
+
+      return null;
     })
     .catch(() => null);
 
@@ -130,35 +157,52 @@ export async function readStatus(): Promise<Status> {
   };
 }
 
-/**
- * Saldo real desde el backend, en vez de adivinarlo con expresiones regulares
- * sobre el texto de la página.
- *
- * El endpoint de créditos es de otro origen y exige un bearer, que vive en la
- * respuesta de sesión. Toda la cadena — leer el token y usarlo — corre DENTRO de
- * la pestaña: lo único que cruza de vuelta a Node es el número. El token nunca
- * toca este proceso, nunca se loguea y nunca se escribe a disco.
- */
-export async function readCredits(page: Page): Promise<{ credits: number; tier: string } | null> {
+export async function readCredits(
+  page: Page,
+): Promise<{ credits: number; tier: string } | null> {
   return page
     .evaluate(async () => {
-      const s = await fetch("/fx/api/auth/session", { credentials: "include" });
+      const s = await fetch("/fx/api/auth/session", {
+        credentials: "include",
+      });
+
       if (!s.ok) return null;
-      const token = ((await s.json()) as { access_token?: string })?.access_token;
+
+      const token = ((await s.json()) as { access_token?: string })
+        ?.access_token;
+
       if (!token) return null;
 
-      const r = await fetch("https://aisandbox-pa.googleapis.com/v1/credits", {
-        headers: { authorization: `Bearer ${token}` },
-      });
+      const r = await fetch(
+        "https://aisandbox-pa.googleapis.com/v1/credits",
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+          },
+        },
+      );
+
       if (!r.ok) return null;
-      const j = (await r.json()) as { credits?: number; sku?: string };
+
+      const j = (await r.json()) as {
+        credits?: number;
+        sku?: string;
+      };
+
       if (typeof j.credits !== "number") return null;
-      return { credits: j.credits, tier: j.sku ?? "unknown" };
+
+      return {
+        credits: j.credits,
+        tier: j.sku ?? "unknown",
+      };
     })
     .catch(() => null);
 }
 
 export async function disconnect(): Promise<void> {
-  if (browser?.isConnected()) await browser.close();
+  if (browser?.isConnected()) {
+    await browser.close();
+  }
+
   browser = null;
 }
