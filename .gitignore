@@ -8,3 +8,6 @@ dist/
 output/
 *.jsonl
 chrome-profile/
+
+# Archivos temporales para subir a Claude Design
+_tmp-subida/
