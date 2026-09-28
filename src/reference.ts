@@ -7,52 +7,23 @@ import { M } from "./i18n.js";
  * IMÁGENES DE REFERENCIA
  *
  * Flow no acepta un archivo directamente en el compositor: primero sube a la
- * biblioteca del proyecto y después se elige desde ahí. Son dos pasos y hay que
- * hacer los dos.
+ * biblioteca del proyecto y después se elige desde ahí. Las dos cosas pasan en el
+ * panel de ingredientes, el que abre el botón `add` que está debajo del
+ * compositor:
  *
- *   1. subir   -> POST v1/flow/uploadImage, devuelve el mediaId
- *   2. adjuntar-> abrir el selector junto al compositor y elegir por nombre
+ *   1. subir   -> "Cargar contenido multimedia" dentro del panel
+ *   2. adjuntar-> marcar la fila de la biblioteca y confirmar con el botón ancho
+ *                 del panel ("Agregar a la instrucción")
  *
- * La subida se hace escribiendo el archivo en el <input type="file"> que Flow ya
- * tiene oculto en el DOM. No hace falta simular un arrastre ni abrir el diálogo
- * del sistema operativo, que sería imposible de automatizar.
+ * Todo se ubica por anclas que no dependen del idioma de la cuenta: la clase
+ * `panels-layout` del panel, las filas `role=option` con `aria-selected`, y las
+ * ligaduras de ícono de Material (`add`/`close`, `upload`), que son el texto del
+ * botón en cualquier idioma.
  */
 
-const UPLOAD_ENDPOINT = "v1/flow/uploadImage";
+const PANEL = ".panels-layout";
 
-/** Sube un archivo local a la biblioteca del proyecto y devuelve su mediaId. */
-export async function uploadImage(page: Page, filePath: string): Promise<{ mediaId: string; fileName: string }> {
-  const fileName = path.basename(filePath);
-
-  const esperando = page.waitForResponse((r) => r.url().includes(UPLOAD_ENDPOINT) && r.request().method() === "POST", {
-    timeout: 120_000,
-  });
-
-  const input = await page.$('input[type="file"]');
-  if (!input) {
-    throw new FlowError(M.noFileInput(), M.noFileInputHint());
-  }
-  await input.setInputFiles(filePath);
-
-  let res;
-  try {
-    res = await esperando;
-  } catch {
-    throw new FlowError(M.uploadUnconfirmed(fileName), M.uploadUnconfirmedHint());
-  }
-  if (!res.ok()) {
-    throw new FlowError(M.uploadFailed(res.status(), fileName));
-  }
-
-  const cuerpo = (await res.json().catch(() => null)) as { media?: { name?: string } } | null;
-  const mediaId = cuerpo?.media?.name;
-  if (!mediaId) {
-    throw new FlowError(M.uploadNoId(fileName));
-  }
-  return { mediaId, fileName };
-}
-
-/** Los eventos sintéticos no los levanta React; hace falta puntero real. */
+/** Los eventos sintéticos no los levanta Angular; hace falta puntero real. */
 async function clickAt(page: Page, x: number, y: number): Promise<void> {
   await page.mouse.move(x, y);
   await page.waitForTimeout(80);
@@ -66,7 +37,7 @@ function composerHasImage(page: Page): Promise<boolean> {
       .filter((e) => (e as HTMLElement).offsetParent)
       .pop();
     let z: HTMLElement | null = comp as HTMLElement | null;
-    for (let i = 0; i < 6 && z; i++) {
+    for (let i = 0; i < 7 && z; i++) {
       if (z.querySelectorAll("img").length > 0) return true;
       z = z.parentElement;
     }
@@ -75,57 +46,166 @@ function composerHasImage(page: Page): Promise<boolean> {
 }
 
 /**
- * Confirma la selección del selector de biblioteca.
+ * El botón que abre y cierra el panel de ingredientes.
  *
- * Elegir la fila sólo la marca y muestra una vista previa; recién el botón del
- * pie del diálogo la adjunta al compositor. Sin ese segundo paso el clic parece
- * haber funcionado y no adjuntó nada.
- *
- * Encontrarlo tiene dos trampas. No tiene atributo estable —las clases son hashes
- * de styled-components, sin aria-label ni testid— y su texto está en el idioma de
- * la cuenta, así que buscar por texto ata el conector a un idioma. Y en el pie del
- * diálogo también vive el botón de subir archivos, así que "el de más abajo" agarra
- * ese: el clic se va a otro lado y el fallo aparece recién al verificar.
- *
- * Lo que los separa limpio es el ancho. El de confirmar ocupa todo el panel de
- * vista previa; el de subir es un control chico de la barra lateral. Se toma el
- * más ancho del tercio inferior, que no depende del idioma ni de qué lado se
- * dibuje cada cosa.
- *
- * Devuelve false si no hay ninguno, que es lo correcto si alguna variante de la
- * interfaz adjunta directamente al hacer clic en la fila.
+ * Arriba de la página hay otro botón con la misma ligadura `add` (el menú de
+ * contenido multimedia), así que no alcanza con el texto: se toma el más cercano
+ * al compositor. Su ligadura dice en qué estado está el panel: `add` cerrado,
+ * `close` abierto.
  */
-async function confirmPicker(page: Page): Promise<boolean> {
-  const boton = await page.evaluate(() => {
-    const dlg = document.querySelector("[role=dialog][data-state=open]");
-    if (!dlg) return null;
-    const caja = dlg.getBoundingClientRect();
-    const cands = [...dlg.querySelectorAll("button")]
-      .filter((b) => {
-        if (!(b as HTMLElement).offsetParent) return false;
-        const r = b.getBoundingClientRect();
-        if (r.width < 160 || r.height < 20) return false;
-        return r.y + r.height / 2 > caja.y + caja.height * 0.66;
-      })
+function ingredientsToggle(page: Page): Promise<{ cx: number; cy: number; open: boolean } | null> {
+  return page.evaluate(() => {
+    const comp = [...document.querySelectorAll('[contenteditable="true"]')]
+      .filter((e) => (e as HTMLElement).offsetParent)
+      .pop();
+    if (!comp) return null;
+    const rc = comp.getBoundingClientRect();
+    const cands = [...document.querySelectorAll("button")]
+      .filter((b) => (b as HTMLElement).offsetParent && /^(add|close)$/.test((b.innerText || "").trim()))
       .map((b) => {
         const r = b.getBoundingClientRect();
-        return { ancho: r.width, cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+        const cx = r.x + r.width / 2;
+        const cy = r.y + r.height / 2;
+        return { cx, cy, open: (b.innerText || "").trim() === "close", d: Math.hypot(cx - rc.x, cy - (rc.y + rc.height)) };
       })
-      .sort((a, b) => b.ancho - a.ancho);
-    return cands[0] ?? null;
+      .sort((a, b) => a.d - b.d);
+    const hit = cands[0];
+    return hit && hit.d < 250 ? { cx: hit.cx, cy: hit.cy, open: hit.open } : null;
   });
-  if (!boton) return false;
-  await clickAt(page, boton.cx, boton.cy);
-  await page.waitForTimeout(2_000);
-  return true;
 }
 
-/** Cierra el selector si quedó abierto de un intento anterior. */
-async function closePicker(page: Page): Promise<void> {
-  const abierto = await page.evaluate(() => !!document.querySelector('[role=dialog][data-state=open]'));
-  if (!abierto) return;
-  await page.keyboard.press("Escape");
-  await page.waitForTimeout(500);
+/**
+ * Abre el panel de ingredientes y espera a que esté de verdad abierto.
+ *
+ * Justo después de una recarga el clic puede llegar antes de que Angular ate los
+ * manejadores y no pasa nada, así que se verifica el panel y se reintenta en vez
+ * de confiar en una espera fija.
+ */
+async function openIngredients(page: Page): Promise<void> {
+  await page.waitForSelector('[contenteditable="true"]', { timeout: 30_000 }).catch(() => {});
+  for (let intento = 0; intento < 12; intento++) {
+    if (await page.$(`${PANEL} [role=listbox]`)) return;
+    const boton = await ingredientsToggle(page);
+    if (!boton) {
+      await page.waitForTimeout(1_000);
+      continue;
+    }
+    if (!boton.open) await clickAt(page, boton.cx, boton.cy);
+    await page.waitForTimeout(1_500);
+  }
+  throw new FlowError(M.noAttachControl());
+}
+
+/**
+ * Cierra el panel de ingredientes.
+ *
+ * Abierto tapa la barra del compositor: el clic para abrir la configuración de
+ * aspecto cae sobre el panel y parece que la configuración "no abre".
+ */
+async function closeIngredients(page: Page): Promise<void> {
+  const boton = await ingredientsToggle(page);
+  if (!boton?.open) return;
+  await clickAt(page, boton.cx, boton.cy);
+  await page.waitForTimeout(800);
+}
+
+/**
+ * Escribe en el buscador del panel. Se busca SIN la extensión: con ".png" el
+ * filtro no devuelve nada aunque la fila se llame exactamente así.
+ */
+async function filterLibrary(page: Page, texto: string): Promise<void> {
+  const buscador = await page.$(`${PANEL} input:not([type=file])`);
+  if (!buscador) return;
+  await buscador.click();
+  await buscador.fill("");
+  if (texto) await buscador.fill(texto);
+  await page.waitForTimeout(1_500);
+}
+
+/**
+ * Filas de la biblioteca con ese nombre de archivo, de arriba abajo (la de más
+ * arriba es la más reciente). El texto de la fila es el nombre seguido del tipo
+ * ("repanito.png Imagen"), así que se compara el comienzo.
+ */
+function rowsNamed(page: Page, fileName: string) {
+  return page.evaluate(
+    ({ panel, n }) =>
+      [...document.querySelectorAll(`${panel} [role=option]`)]
+        .filter((o) => {
+          if (!(o as HTMLElement).offsetParent) return false;
+          const t = ((o as HTMLElement).innerText || "").trim().replace(/\s+/g, " ");
+          return t === n || t.startsWith(n + " ");
+        })
+        .map((o) => {
+          const r = o.getBoundingClientRect();
+          const img = o.querySelector("img") as HTMLImageElement | null;
+          return {
+            cx: r.x + r.width / 2,
+            cy: r.y + r.height / 2,
+            selected: o.getAttribute("aria-selected") === "true",
+            ready: !!img && img.complete && img.naturalWidth > 0,
+          };
+        })
+        .sort((a, b) => a.cy - b.cy),
+    { panel: PANEL, n: fileName },
+  );
+}
+
+/** ¿Hay en la biblioteca del proyecto una imagen con ese nombre de archivo? */
+export async function isInLibrary(page: Page, fileName: string): Promise<boolean> {
+  await page.bringToFront();
+  await openIngredients(page);
+  await filterLibrary(page, fileName.replace(/\.[a-z0-9]+$/i, ""));
+  const hay = (await rowsNamed(page, fileName)).length > 0;
+  await filterLibrary(page, "");
+  await closeIngredients(page);
+  return hay;
+}
+
+/** Sube un archivo local a la biblioteca del proyecto. */
+export async function uploadImage(page: Page, filePath: string): Promise<{ fileName: string }> {
+  const fileName = path.basename(filePath);
+  await page.bringToFront();
+  await openIngredients(page);
+  await filterLibrary(page, "");
+  const antes = (await rowsNamed(page, fileName)).length;
+
+  // Flow crea el <input type=file> recién al pulsar "Cargar". Se escucha el
+  // selector de archivos antes del clic: así Playwright lo intercepta y el
+  // diálogo del sistema no llega a abrirse. Si igual no se dispara, se escribe
+  // directo en el input que quedó en el DOM.
+  let input = await page.$('input[type="file"]');
+  if (!input) {
+    const boton = await page.evaluate((panel) => {
+      const b = [...document.querySelectorAll(`${panel} button`)].find(
+        (x) => (x as HTMLElement).offsetParent && /^upload\b/.test(((x as HTMLElement).innerText || "").trim()),
+      );
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+    }, PANEL);
+    if (!boton) throw new FlowError(M.noFileInput(), M.noFileInputHint());
+
+    const selector = page.waitForEvent("filechooser", { timeout: 8_000 }).catch(() => null);
+    await clickAt(page, boton.cx, boton.cy);
+    const chooser = await selector;
+    if (chooser) {
+      await chooser.setFiles(filePath);
+    } else {
+      input = await page.waitForSelector('input[type="file"]', { state: "attached", timeout: 5_000 }).catch(() => null);
+      if (!input) throw new FlowError(M.noFileInput(), M.noFileInputHint());
+    }
+  }
+  if (input) await input.setInputFiles(filePath);
+
+  // Terminó cuando aparece una fila nueva con ese nombre y su miniatura cargó:
+  // mientras sube, la fila existe pero todavía sin imagen.
+  for (let i = 0; i < 120; i++) {
+    const filas = await rowsNamed(page, fileName);
+    if (filas.length > antes && filas[0]?.ready) return { fileName };
+    await page.waitForTimeout(1_000);
+  }
+  throw new FlowError(M.uploadUnconfirmed(fileName), M.uploadUnconfirmedHint());
 }
 
 /**
@@ -133,73 +213,54 @@ async function closePicker(page: Page): Promise<void> {
  * el nombre de archivo con el que se subió.
  */
 export async function attachReference(page: Page, fileName: string): Promise<void> {
-  // Un diálogo abierto de un intento previo haría que el clic siguiente lo
-  // cierre en vez de abrirlo, y el fallo se atribuiría a la búsqueda.
-  await closePicker(page);
+  await page.bringToFront();
+  await openIngredients(page);
 
-  const abrir = await page.evaluate(() => {
-    const els = [...document.querySelectorAll("button,[role=button]")].filter((e) => (e as HTMLElement).offsetParent);
-    const hit = els.find((e) => /^add_2\b/.test(((e as HTMLElement).innerText || "").trim()));
-    if (!hit) return null;
-    const r = hit.getBoundingClientRect();
-    return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
-  });
-  if (!abrir) {
-    throw new FlowError(M.noAttachControl());
-  }
-  await clickAt(page, abrir.cx, abrir.cy);
+  // La biblioteca crece con cada generación y el panel sólo dibuja las filas
+  // visibles, así que se filtra por nombre en vez de buscar a ojo.
+  await filterLibrary(page, fileName.replace(/\.[a-z0-9]+$/i, ""));
 
-  // La biblioteca se puebla por red. Una espera fija falla justo cuando el
-  // proyecto tiene muchos medios, que es cuando más se la necesita: hay que
-  // esperar al elemento, no a un reloj.
-  const buscar = () =>
-    page.evaluate((n) => {
-      // Varios elementos anidados contienen el mismo texto: la fila entera, un
-      // envoltorio interno y la etiqueta suelta. Hay que clickear la FILA; la
-      // etiqueta no tiene manejador y el clic se pierde en silencio, que es el
-      // peor modo de fallar porque parece que anduvo.
-      //
-      // Entre filas repetidas —el mismo archivo subido dos veces— gana la de
-      // más arriba, que es la más reciente.
-      const cands = [...document.querySelectorAll("div,li,button")]
-        .filter((el) => {
-          if (!(el as HTMLElement).offsetParent) return false;
-          if (!((el as HTMLElement).innerText || "").includes(n)) return false;
-          const r = el.getBoundingClientRect();
-          return r.height >= 28 && r.height <= 140 && r.width >= 80;
-        })
-        .map((el) => {
-          const r = el.getBoundingClientRect();
-          return { area: r.width * r.height, y: r.y, cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
-        })
-        .sort((a, b) => a.y - b.y || b.area - a.area);
-      return cands[0] ?? null;
-    }, fileName);
-
-  let item = await buscar();
-  for (let intento = 0; !item && intento < 15; intento++) {
+  let filas = await rowsNamed(page, fileName);
+  for (let i = 0; !filas.length && i < 15; i++) {
     await page.waitForTimeout(1_000);
-    item = await buscar();
+    filas = await rowsNamed(page, fileName);
   }
-
-  if (!item) {
-    await page.keyboard.press("Escape");
+  const fila = filas[0];
+  if (!fila) {
+    await filterLibrary(page, "");
+    await closeIngredients(page);
     throw new FlowError(M.notInLibrary(fileName), M.notInLibraryHint());
   }
 
-  await clickAt(page, item.cx, item.cy);
-  await page.waitForTimeout(1_500);
-
-  // Elegir la fila sólo la marca: falta confirmar. Se chequea antes por si
-  // alguna variante de la interfaz adjunta de una.
-  if (!(await composerHasImage(page))) {
-    await confirmPicker(page);
+  // La fila es un toggle: si quedó marcada de un intento anterior, un clic la
+  // DESmarca. Se clickea sólo si no está marcada y se verifica el resultado.
+  if (!fila.selected) {
+    await clickAt(page, fila.cx, fila.cy);
+    await page.waitForTimeout(800);
   }
 
-  if (!(await composerHasImage(page))) {
-    await closePicker(page);
-    throw new FlowError(M.notAttached(fileName), M.notAttachedHint());
+  // Marcar la fila no adjunta nada: falta el botón de confirmar. No tiene ícono
+  // ni atributo estable y su texto está en el idioma de la cuenta; lo que lo
+  // distingue es que es el botón más ancho del panel.
+  const confirmar = await page.evaluate((panel) => {
+    const cands = [...document.querySelectorAll(`${panel} button:not([role=option])`)]
+      .filter((b) => (b as HTMLElement).offsetParent && !/^(upload|close|add)\b/.test(((b as HTMLElement).innerText || "").trim()))
+      .map((b) => {
+        const r = b.getBoundingClientRect();
+        return { ancho: r.width, cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+      })
+      .sort((a, b) => b.ancho - a.ancho);
+    return cands[0] && cands[0].ancho >= 160 ? cands[0] : null;
+  }, PANEL);
+  if (confirmar) {
+    await clickAt(page, confirmar.cx, confirmar.cy);
+    await page.waitForTimeout(2_000);
   }
+
+  const ok = await composerHasImage(page);
+  await filterLibrary(page, "").catch(() => {});
+  await closeIngredients(page);
+  if (!ok) throw new FlowError(M.notAttached(fileName), M.notAttachedHint());
 }
 
 /**
@@ -211,18 +272,7 @@ export async function attachReference(page: Page, fileName: string): Promise<voi
  * sin depender de encontrar el botón de quitar, que no siempre está.
  */
 export async function clearReferences(page: Page): Promise<void> {
-  const hay = await page.evaluate(() => {
-    const comp = [...document.querySelectorAll('[contenteditable="true"]')]
-      .filter((e) => (e as HTMLElement).offsetParent)
-      .pop();
-    let z: HTMLElement | null = comp as HTMLElement | null;
-    for (let i = 0; i < 6 && z; i++) {
-      if (z.querySelectorAll("img").length > 0) return true;
-      z = z.parentElement;
-    }
-    return false;
-  });
-  if (!hay) return;
+  if (!(await composerHasImage(page))) return;
 
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
   await page.waitForSelector('[contenteditable="true"]', { timeout: 60_000 });

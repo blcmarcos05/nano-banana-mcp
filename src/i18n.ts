@@ -137,16 +137,6 @@ export const M = {
     }),
   uploadUnconfirmedHint: () =>
     p({ en: "Check the browser window.", es: "Revisá la ventana del navegador." }),
-  uploadFailed: (status: number, file: string) =>
-    p({
-      en: `Flow returned ${status} while uploading ${file}.`,
-      es: `Flow devolvió ${status} al subir ${file}.`,
-    }),
-  uploadNoId: (file: string) =>
-    p({
-      en: `Flow accepted ${file} but returned no media identifier.`,
-      es: `Flow aceptó ${file} pero no devolvió un identificador de medio.`,
-    }),
   noAttachControl: () =>
     p({
       en: "Couldn't find the control to attach media next to the composer.",

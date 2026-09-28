@@ -3,25 +3,31 @@
  *
  * Flow no tiene 4:5 nativo -> se genera en 3:4 y se recorta a 1080x1350.
  *
- * Adjunta la referencia con su propia lógica porque src/reference.ts quedó
- * viejo: la interfaz nueva no tiene un <input type=file> en el DOM hasta que
- * se abre el panel de ingredientes, y ahí el archivo entra por el diálogo del
- * sistema (filechooser), no escribiendo el input.
+ * Las referencias se suben y adjuntan con src/reference.ts, el mismo módulo
+ * que usa el servidor MCP.
  */
 import { readStatus, getFlowTab } from "./dist/browser.js";
 import { snapshotMedia, collectFromDom } from "./dist/generate.js";
 import { applySettings, closeSettings, submitPrompt } from "./dist/ui.js";
-import { clearReferences } from "./dist/reference.js";
+import { attachReference, clearReferences, isInLibrary, uploadImage } from "./dist/reference.js";
 import { fetchMedia } from "./dist/download.js";
 import { writeImage } from "./dist/image.js";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const REF = process.env.REPANO_REF;
 const OUT = process.env.REPANO_OUT;
-const REF_NAME = path.basename(REF);
+const REF_NAME = REF ? path.basename(REF) : null;
 /** Slide ya aprobada que se adjunta en todas para anclar fondo, luz y badge. */
 const ESTILO_REF = process.env.REPANO_ESTILO;
 const ESTILO_NAME = ESTILO_REF ? path.basename(ESTILO_REF) : null;
+/**
+ * Guion de otro carrusel: un módulo que exporta SLIDES, prompt(escena, reglaTexto)
+ * y alto. Sin él, se usan las slides y los prompts de este archivo.
+ */
+const GUION = process.env.REPANO_GUION
+  ? await import(pathToFileURL(path.resolve(process.env.REPANO_GUION)).href)
+  : null;
 const SOLO = process.env.REPANO_SOLO ? process.env.REPANO_SOLO.split(",") : null;
 
 /** Se antepone sólo cuando hay una slide ya aprobada adjunta como ancla. */
@@ -112,25 +118,15 @@ if (!status.projectId) {
 }
 const { page } = await getFlowTab();
 
-/** Busca un botón visible por texto o aria-label y devuelve su centro. */
-const findBtn = (re) =>
-  page.evaluate((s) => {
-    const rx = new RegExp(s, "i");
-    const e = [...document.querySelectorAll("button,[role=button]")]
-      .filter((x) => x.offsetParent)
-      .find((x) => rx.test((x.innerText || "").trim().replace(/\s+/g, " ") + " " + (x.getAttribute("aria-label") || "")));
-    if (!e) return null;
-    const r = e.getBoundingClientRect();
-    return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
-  }, re);
-
-const clickBtn = async (re, what) => {
-  const b = await findBtn(re);
-  if (!b) throw new Error(`No encontré el control: ${what}`);
-  await page.mouse.move(b.cx, b.cy);
-  await page.waitForTimeout(80);
-  await page.mouse.click(b.cx, b.cy);
-};
+/** Sube un archivo a la biblioteca del proyecto, si no estaba ya: duplicarlo sólo ensucia la biblioteca. */
+async function subirReferencia(ruta) {
+  const nombre = path.basename(ruta);
+  if (await isInLibrary(page, nombre)) {
+    console.log(`${nombre}: ya estaba en la biblioteca`);
+    return;
+  }
+  await uploadImage(page, ruta);
+}
 
 const composerHasImage = () =>
   page.evaluate(() => {
@@ -143,162 +139,14 @@ const composerHasImage = () =>
     return false;
   });
 
-/**
- * Abre el panel de ingredientes si está cerrado.
- *
- * El estado se lee del propio botón, que alterna su ligature entre `add` y
- * `close`. Mirar si existe "Agregar a la instrucción" no sirve: ese botón
- * aparece recién cuando hay algo seleccionado, así que en un proyecto con la
- * biblioteca vacía el panel abierto se leía como cerrado y el clic lo cerraba.
- */
-async function abrirPanel() {
-  const SELECTOR_BUSCADOR = 'input[aria-label="Buscar activos"]';
-
-  for (let intento = 0; intento < 6; intento++) {
-    // El buscador sólo existe con el panel abierto, así que sirve de prueba de
-    // que abrió de verdad. Justo después de un reload el clic puede llegar
-    // antes de que Angular ate los manejadores y no pasa nada: por eso se
-    // verifica y se reintenta en vez de confiar en una espera fija.
-    if (await page.$(SELECTOR_BUSCADOR)) return;
-
-    const boton = await page.evaluate(() => {
-      const e = [...document.querySelectorAll("button,[role=button]")]
-        .filter((x) => x.offsetParent)
-        .find((x) => /ingredientes/i.test(x.getAttribute("aria-label") || ""));
-      if (!e) return null;
-      const r = e.getBoundingClientRect();
-      return {
-        cx: r.x + r.width / 2,
-        cy: r.y + r.height / 2,
-        cerrado: /^add\b/.test((e.innerText || "").trim()),
-      };
-    });
-
-    if (boton?.cerrado) {
-      await page.mouse.move(boton.cx, boton.cy);
-      await page.waitForTimeout(80);
-      await page.mouse.click(boton.cx, boton.cy);
-    }
-    await page.waitForTimeout(1_500);
-  }
-
-  throw new Error("El panel de ingredientes no abrió");
-}
-
-const filaDe = (nombre) => `^${nombre.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} Imagen`;
-
-/** Sube un archivo a la biblioteca del proyecto, si no estaba ya. */
-async function subirReferencia(ruta) {
-  const nombre = path.basename(ruta);
-  // Igual que en la generación: con la pestaña de fondo el clic se despacha
-  // pero la app no lo procesa y el diálogo de archivos nunca aparece.
-  await page.bringToFront();
-  await abrirPanel();
-  // Si ya está de una corrida anterior, no tiene sentido volver a subirla:
-  // sólo deja filas duplicadas.
-  if (await findBtn(filaDe(nombre))) {
-    console.log(`${nombre}: ya estaba en la biblioteca`);
-    return;
-  }
-  // Con el panel abierto Flow deja un <input type=file> en el DOM: escribirle
-  // el archivo evita depender del diálogo del sistema, que es lo que se
-  // quedaba colgado. El filechooser queda de respaldo por si esa variante de
-  // la interfaz no lo expone.
-  const input = await page.$('input[type="file"]');
-  if (input) {
-    await input.setInputFiles(ruta);
-  } else {
-    const up = await findBtn("Cargar contenido multimedia");
-    if (!up) throw new Error("No encontré 'Cargar contenido multimedia'");
-    const [fc] = await Promise.all([
-      page.waitForEvent("filechooser", { timeout: 20_000 }),
-      page.mouse.click(up.cx, up.cy),
-    ]);
-    await fc.setFiles(ruta);
-  }
-  // La subida tarda: esperamos a que la fila deje de decir "Subiendo".
-  for (let i = 0; i < 60; i++) {
-    if (await findBtn(filaDe(nombre))) return;
-    await page.waitForTimeout(1_000);
-  }
-  throw new Error(`La subida de ${nombre} no terminó a tiempo`);
-}
-
-/**
- * Cierra el panel de ingredientes.
- *
- * Mientras está abierto tapa la barra del compositor, y el clic para abrir la
- * configuración de aspecto cae sobre el panel en vez del botón: parece que la
- * configuración "no abre".
- */
-async function cerrarPanel() {
-  const abierto = await page.evaluate(() => {
-    const e = [...document.querySelectorAll("button,[role=button]")]
-      .filter((x) => x.offsetParent)
-      .find((x) => /ingredientes/i.test(x.getAttribute("aria-label") || ""));
-    if (!e) return null;
-    const r = e.getBoundingClientRect();
-    return /^close\b/.test((e.innerText || "").trim())
-      ? { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }
-      : null;
-  });
-  if (!abierto) return;
-  await page.mouse.move(abierto.cx, abierto.cy);
-  await page.waitForTimeout(80);
-  await page.mouse.click(abierto.cx, abierto.cy);
-  await page.waitForTimeout(1_000);
-}
-
-/** Adjunta al compositor referencias que ya están en la biblioteca. */
-async function adjuntarReferencias(nombres) {
-  for (const nombre of nombres) {
-    await abrirPanel();
-
-    // La biblioteca crece con cada generación y el panel sólo dibuja las filas
-    // visibles, así que buscar la referencia a ojo deja de funcionar apenas hay
-    // unas cuantas imágenes. Se filtra por nombre con el buscador del panel.
-    // Se busca SIN la extensión: con ".png" o ".jpg" el filtro no devuelve
-    // nada, aunque la fila se llame exactamente así.
-    const buscador = await page.$('input[aria-label="Buscar activos"]');
-    if (buscador) {
-      await buscador.click();
-      await buscador.fill("");
-      await buscador.fill(nombre.replace(/\.[a-z0-9]+$/i, ""));
-      await page.waitForTimeout(2_000);
-    }
-
-    const fila = filaDe(nombre);
-    for (let i = 0; i < 20 && !(await findBtn(fila)); i++) await page.waitForTimeout(1_000);
-    // La fila es un toggle. Si quedó marcada de un intento anterior, este clic
-    // la DESmarca y el botón de confirmar desaparece: el adjunto falla sin
-    // decir por qué. Se comprueba el resultado y, si se apagó, se vuelve a
-    // encender.
-    await clickBtn(fila, `fila de ${nombre}`);
-    await page.waitForTimeout(1_500);
-
-    let confirmar = await findBtn("^Agregar a la instrucci");
-    if (!confirmar) {
-      await clickBtn(fila, `fila de ${nombre}`);
-      await page.waitForTimeout(1_500);
-      confirmar = await findBtn("^Agregar a la instrucci");
-    }
-    if (!confirmar) throw new Error(`No pude marcar ${nombre} en la biblioteca`);
-
-    await page.mouse.click(confirmar.cx, confirmar.cy);
-    await page.waitForTimeout(2_500);
-  }
-  if (!(await composerHasImage())) throw new Error("Las referencias no quedaron adjuntas al compositor");
-}
-
-if (!process.env.REPANO_ADJUNTO) await subirReferencia(REF);
+if (!process.env.REPANO_ADJUNTO && REF) await subirReferencia(REF);
 if (ESTILO_REF) await subirReferencia(ESTILO_REF);
-// El panel de ingredientes queda abierto tras subir; se cierra al adjuntar.
 
 let primera = true;
 /** Nombre en la biblioteca de la slide que sirve de vara de estilo. */
 let ancla = ESTILO_NAME;
 
-for (const [slug, mascota, reglaTexto, escena] of SLIDES) {
+for (const [slug, mascota, reglaTexto, escena] of GUION?.SLIDES ?? SLIDES) {
   if (SOLO && !SOLO.includes(slug)) continue;
 
   // Encadenar generaciones sin respiro es el patrón más obvio de automatización.
@@ -343,10 +191,14 @@ async function generarSlide(slug, mascota, reglaTexto, escena, t0) {
   // No se toca nada — clearReferences recarga la página y la borraría.
   if (!process.env.REPANO_ADJUNTO) {
     await clearReferences(page);
-    if (mascota) await adjuntarReferencias([REF_NAME]);
-    else if (ancla) await adjuntarReferencias([ancla]);
+    if (mascota) await attachReference(page, REF_NAME);
+    else if (ancla) await attachReference(page, ancla);
   }
-  await cerrarPanel();
+  // Con la referencia puesta a mano no hay cómo reponerla: si se soltó tras la
+  // generación anterior, mejor parar que generar sin personaje.
+  if (process.env.REPANO_ADJUNTO && !(await composerHasImage())) {
+    throw new Error("La referencia adjunta a mano ya no está en el compositor");
+  }
 
   await applySettings(page, { aspect: "3:4", count: 1 });
   await closeSettings(page);
@@ -355,7 +207,7 @@ async function generarSlide(slug, mascota, reglaTexto, escena, t0) {
   const cosecha = collectFromDom(page, antes, 1, "3:4", 240_000);
   // Primero lo que hay en la imagen y después el estilo: lo que va al final
   // pesa menos, y el estilo común no debe ganarle a la mascota.
-  const prompt = (
+  const prompt = GUION ? GUION.prompt(escena, reglaTexto) : (
     mascota
       ? [mascota, `Scene: ${escena}`, FONDO, reglaTexto, SIN_BADGE]
       : [ancla ? ANCLA : "", `Scene: ${escena}`, OBJETOS, FONDO, reglaTexto, SIN_BADGE]
@@ -369,7 +221,7 @@ async function generarSlide(slug, mascota, reglaTexto, escena, t0) {
   const bytes = await fetchMedia(page, images[0].mediaId, images[0].signedUrl);
   const res = await writeImage(bytes, path.join(OUT, `repano-${slug}.jpg`), {
     width: 1080,
-    height: 1350,
+    height: GUION?.alto ?? 1350,
     fit: "cover",
   });
   console.log(`OK  ${res.file}  ${res.width}x${res.height}  ${Math.round(res.bytes / 1024)} KB  (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
@@ -377,10 +229,17 @@ async function generarSlide(slug, mascota, reglaTexto, escena, t0) {
   // La primera slide de objetos pasa a ser la vara: las que siguen la llevan
   // adjunta para no derivar en fondo, luz ni material. Anclar contra una
   // imagen del mismo lote sale mejor que describir el estilo otra vez.
+  // La imagen ya está guardada: si la subida del ancla falla, se sigue sin
+  // ancla. Dejar que el error suba hacía que el reintento generara la slide
+  // entera otra vez (y pisara el archivo) sólo por no poder subirla.
   if (!mascota && !ancla && !process.env.REPANO_ADJUNTO) {
-    await subirReferencia(res.file);
-    ancla = path.basename(res.file);
-    console.log(`  ancla de estilo: ${ancla}`);
+    try {
+      await uploadImage(page, res.file);
+      ancla = path.basename(res.file);
+      console.log(`  ancla de estilo: ${ancla}`);
+    } catch (err) {
+      console.log(`  sin ancla de estilo: ${err.message.split("\n")[0]}`);
+    }
   }
 }
 
