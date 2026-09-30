@@ -303,7 +303,12 @@ export async function generateVideos(opts: VideoOptions): Promise<VideoResult> {
   }
 
   // Primero subir: el panel de ingredientes tapa la barra del compositor y no
-  // debe estar abierto mientras se configura.
+  // debe estar abierto mientras se configura. El botón para subir sólo existe
+  // en modo imagen, así que si la pestaña quedó en video se vuelve a imagen.
+  if (opts.startFrame || opts.endFrame) {
+    await applySettings(page, { aspect: opts.aspect, count: 1 });
+    await closeSettings(page);
+  }
   const inicio = opts.startFrame ? (await uploadImage(page, opts.startFrame)).fileName : opts.startFrameLibraryName;
   const fin = opts.endFrame ? (await uploadImage(page, opts.endFrame)).fileName : opts.endFrameLibraryName;
 
