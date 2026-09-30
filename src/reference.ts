@@ -162,6 +162,18 @@ export async function isInLibrary(page: Page, fileName: string): Promise<boolean
   return hay;
 }
 
+/** ¿Está abierto el aviso de derechos que Flow muestra al subir una imagen? */
+function rightsNoticeOpen(page: Page): Promise<boolean> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll("body *")].some(
+      (e) =>
+        (e as HTMLElement).offsetParent !== null &&
+        e.children.length === 0 &&
+        /^(derechos para usar esta imagen|rights to use this image)/i.test(((e as HTMLElement).innerText || "").trim()),
+    ),
+  );
+}
+
 /** Sube un archivo local a la biblioteca del proyecto. */
 export async function uploadImage(page: Page, filePath: string): Promise<{ fileName: string }> {
   const fileName = path.basename(filePath);
@@ -203,6 +215,10 @@ export async function uploadImage(page: Page, filePath: string): Promise<{ fileN
   for (let i = 0; i < 120; i++) {
     const filas = await rowsNamed(page, fileName);
     if (filas.length > antes && filas[0]?.ready) return { fileName };
+    // A veces Flow frena la subida con un aviso de derechos sobre la imagen
+    // ("Acepto"/"Cancelar"). Aceptar condiciones le toca a la persona, no a
+    // este servidor: se avisa en vez de esperar dos minutos a ciegas.
+    if (await rightsNoticeOpen(page)) throw new FlowError(M.rightsNotice(fileName), M.rightsNoticeHint());
     await page.waitForTimeout(1_000);
   }
   throw new FlowError(M.uploadUnconfirmed(fileName), M.uploadUnconfirmedHint());

@@ -238,6 +238,16 @@ export const M = {
       en: "They only exist in video mode with Frames selected. If Flow's interface changed, please open an issue.",
       es: "Sólo existen en modo video con Fotogramas elegido. Si la interfaz de Flow cambió, abrí un issue.",
     }),
+  rightsNotice: (file: string) =>
+    p({
+      en: `Flow is asking to confirm you have the rights to use ${file} before uploading it.`,
+      es: `Flow pide confirmar que tenés los derechos para usar ${file} antes de subirla.`,
+    }),
+  rightsNoticeHint: () =>
+    p({
+      en: "Read the notice in the Flow window and accept it yourself if it applies, then retry. Nothing was sent.",
+      es: "Leé el aviso en la ventana de Flow y aceptalo vos si corresponde; después reintentá. No se envió nada.",
+    }),
   frameNotSet: (file: string) =>
     p({ en: `The frame ${file} didn't stick in its slot.`, es: `El fotograma ${file} no quedó puesto en su ranura.` }),
 

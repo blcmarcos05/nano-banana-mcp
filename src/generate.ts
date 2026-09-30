@@ -177,6 +177,14 @@ export async function startGeneration(opts: GenerateOptions): Promise<StartedGen
     /* sin referencias que limpiar, o la UI cambió: no es fatal */
   }
 
+  // En modo video (con fotogramas) no está el botón de ingredientes: si la
+  // pestaña quedó así de un video anterior, adjuntar referencias falla. Se pasa
+  // a modo imagen antes de adjuntar.
+  if (opts.referenceLibraryNames?.length || opts.referenceImages?.length) {
+    await applySettings(page, { aspect: opts.aspect, count: opts.count });
+    await closeSettings(page);
+  }
+
   for (const nombre of opts.referenceLibraryNames ?? []) {
     await attachReference(page, nombre);
   }
