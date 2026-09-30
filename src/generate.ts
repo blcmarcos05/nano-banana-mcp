@@ -237,33 +237,34 @@ export async function startGeneration(opts: GenerateOptions): Promise<StartedGen
  * el archivo en `src`; el id es el uuid de la URL. Un video tarda minutos, no
  * segundos, y mientras se genera la baldosa no trae <video>.
  */
-const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-
-export async function snapshotVideos(page: Page): Promise<Map<string, string>> {
-  const list = await page.evaluate((reSrc) => {
-    const re = new RegExp(reSrc, "i");
-    const out: { id: string; src: string }[] = [];
-    const srcs = [
-      ...[...document.querySelectorAll("video")].map((v) => (v as HTMLVideoElement).currentSrc || (v as HTMLVideoElement).src),
-      ...[...document.querySelectorAll("video source")].map((s) => (s as HTMLSourceElement).src),
-    ];
-    for (const src of srcs) {
-      if (!src || src.startsWith("blob:")) continue;
-      const m = re.exec(src);
-      if (m) out.push({ id: m[1]!.toLowerCase(), src });
-    }
-    return out;
-  }, UUID_RE.source);
-  return new Map(list.map((v) => [v.id, v.src]));
+/** Baldosas de video terminadas en el tablero: las marca el ícono `play_circle`. */
+function videoTiles(page: Page): Promise<{ x: number; y: number }[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll("mat-icon")]
+      .filter((m) => (m as HTMLElement).offsetParent && m.textContent?.trim() === "play_circle")
+      .map((m) => {
+        const r = m.getBoundingClientRect();
+        return { x: r.x, y: r.y };
+      })
+      .sort((a, b) => a.y - b.y || a.x - b.x),
+  );
 }
 
-/** Lo que hay de <video> en la página, para el mensaje de error si no se reconoce nada. */
-function describeVideos(page: Page): Promise<string> {
-  return page.evaluate(() =>
-    [...document.querySelectorAll("video")]
-      .map((v) => `${(v as HTMLVideoElement).currentSrc || (v as HTMLVideoElement).src || "(sin src)"}`.slice(0, 120))
-      .join(" | ") || "(ningún <video>)",
-  );
+/**
+ * La URL del video (flow.google.com/asb/…, sin id) sólo existe mientras el
+ * <video> está montado, y Flow lo monta al pasar el puntero por la baldosa.
+ */
+async function hoverVideoSrc(page: Page, tile: { x: number; y: number }): Promise<string | null> {
+  await page.mouse.move(tile.x + 80, tile.y + 120);
+  for (let i = 0; i < 10; i++) {
+    await page.waitForTimeout(500);
+    const src = await page.evaluate(() => {
+      const v = document.querySelector("video") as HTMLVideoElement | null;
+      return v ? v.currentSrc || v.src : null;
+    });
+    if (src && !src.startsWith("blob:")) return src;
+  }
+  return null;
 }
 
 export interface VideoOptions {
@@ -329,30 +330,31 @@ export async function generateVideos(opts: VideoOptions): Promise<VideoResult> {
   if (inicio) await setFrame(page, "start", inicio);
   if (fin) await setFrame(page, "end", fin);
 
-  const antes = new Set((await snapshotVideos(page)).keys());
+  // Lo que se compara es la URL del video más reciente (la primera baldosa con
+  // play). Contar baldosas no sirve: Flow monta más a medida que carga el tablero.
+  const primera = async () => {
+    const t = (await videoTiles(page))[0];
+    return t ? hoverVideoSrc(page, t) : null;
+  };
+  const antes = await primera();
   await submitPrompt(page, opts.prompt);
 
   const timeout = opts.timeoutMs ?? Math.max(config.generateTimeoutMs, 600_000);
   const t0 = Date.now();
-  const nuevos = new Map<string, string>();
-  let primero = 0;
+  let src: string | null = null;
   while (Date.now() - t0 < timeout) {
-    for (const [id, src] of await snapshotVideos(page)) {
-      if (!antes.has(id) && !nuevos.has(id)) {
-        nuevos.set(id, src);
-        if (!primero) primero = Date.now();
-      }
+    await page.waitForTimeout(8_000);
+    const ahora = await primera();
+    if (ahora && ahora !== antes) {
+      src = ahora;
+      break;
     }
-    if (nuevos.size >= opts.count) break;
-    if (primero && Date.now() - primero > 60_000) break;
-    await page.waitForTimeout(3_000);
   }
-
-  if (nuevos.size === 0) {
-    throw new FlowError(M.noVideos(Math.round(timeout / 60_000)), M.noVideosHint(await describeVideos(page)));
-  }
+  await page.mouse.move(5, 5);
+  if (!src) throw new FlowError(M.noVideos(Math.round(timeout / 60_000)), M.noVideosHint("-"));
+  const nuevos: [string, string][] = [[`video-${Date.now()}`, src]];
   return {
-    videos: [...nuevos].slice(0, opts.count).map(([mediaId, src]) => ({ mediaId, src })),
+    videos: nuevos.map(([mediaId, src]) => ({ mediaId, src })),
     quotedCost: quote.cost,
     page,
   };
