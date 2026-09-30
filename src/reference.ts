@@ -86,6 +86,9 @@ async function openIngredients(page: Page): Promise<void> {
   for (let intento = 0; intento < 12; intento++) {
     if (await page.$(`${PANEL} [role=listbox]`)) return;
     const boton = await ingredientsToggle(page);
+    // Con la biblioteca vacía (proyecto nuevo) el panel abre sin lista: vale
+    // lo que dice el botón.
+    if (boton?.open) return;
     if (!boton) {
       await page.waitForTimeout(1_000);
       continue;
