@@ -216,6 +216,26 @@ export async function attachReference(page: Page, fileName: string): Promise<voi
   await page.bringToFront();
   await openIngredients(page);
 
+  if (!(await pickInOpenPanel(page, fileName))) {
+    await filterLibrary(page, "");
+    await closeIngredients(page);
+    throw new FlowError(M.notInLibrary(fileName), M.notInLibraryHint());
+  }
+
+  const ok = await composerHasImage(page);
+  await filterLibrary(page, "").catch(() => {});
+  await closeIngredients(page);
+  if (!ok) throw new FlowError(M.notAttached(fileName), M.notAttachedHint());
+}
+
+/**
+ * Con el panel de la biblioteca ya abierto, marca la fila de ese archivo y
+ * confirma. Devuelve false si la fila no aparece.
+ *
+ * Es el mismo panel para adjuntar referencias y para elegir los fotogramas de un
+ * video; lo que cambia es qué botón lo abrió.
+ */
+async function pickInOpenPanel(page: Page, fileName: string): Promise<boolean> {
   // La biblioteca crece con cada generación y el panel sólo dibuja las filas
   // visibles, así que se filtra por nombre en vez de buscar a ojo.
   await filterLibrary(page, fileName.replace(/\.[a-z0-9]+$/i, ""));
@@ -226,11 +246,7 @@ export async function attachReference(page: Page, fileName: string): Promise<voi
     filas = await rowsNamed(page, fileName);
   }
   const fila = filas[0];
-  if (!fila) {
-    await filterLibrary(page, "");
-    await closeIngredients(page);
-    throw new FlowError(M.notInLibrary(fileName), M.notInLibraryHint());
-  }
+  if (!fila) return false;
 
   // La fila es un toggle: si quedó marcada de un intento anterior, un clic la
   // DESmarca. Se clickea sólo si no está marcada y se verifica el resultado.
@@ -256,11 +272,77 @@ export async function attachReference(page: Page, fileName: string): Promise<voi
     await clickAt(page, confirmar.cx, confirmar.cy);
     await page.waitForTimeout(2_000);
   }
+  return true;
+}
 
-  const ok = await composerHasImage(page);
-  await filterLibrary(page, "").catch(() => {});
-  await closeIngredients(page);
-  if (!ok) throw new FlowError(M.notAttached(fileName), M.notAttachedHint());
+/**
+ * FOTOGRAMAS DE UN VIDEO
+ *
+ * En modo video con "Fotogramas", junto al compositor aparecen dos ranuras
+ * (inicial y final) separadas por el botón de intercambiarlas, cuya ligadura
+ * `swap_horiz` es la única ancla que no depende del idioma: la ranura inicial es
+ * el botón más cercano a su izquierda y la final, a su derecha. Cada ranura abre
+ * el mismo panel de biblioteca que las referencias.
+ */
+export type FrameSlot = "start" | "end";
+
+function frameSlot(page: Page, slot: FrameSlot): Promise<{ cx: number; cy: number; filled: boolean } | null> {
+  return page.evaluate((slot) => {
+    const vis = (e: Element) => (e as HTMLElement).offsetParent !== null;
+    const swap = [...document.querySelectorAll("button")].find(
+      (b) => vis(b) && ((b as HTMLElement).innerText || "").trim() === "swap_horiz",
+    );
+    if (!swap) return null;
+    const rs = swap.getBoundingClientRect();
+    const cy = rs.y + rs.height / 2;
+    const cands = [...document.querySelectorAll("button, [role=button]")]
+      .filter((b) => vis(b) && b !== swap)
+      .map((b) => ({ b, r: b.getBoundingClientRect() }))
+      // Misma fila que el botón de intercambio.
+      .filter(({ r }) => Math.abs(r.y + r.height / 2 - cy) < 30)
+      .filter(({ r }) => (slot === "start" ? r.x + r.width <= rs.x + 2 : r.x >= rs.x + rs.width - 2))
+      .sort((a, b) =>
+        slot === "start" ? b.r.x - a.r.x : a.r.x - b.r.x,
+      );
+    const hit = cands[0];
+    if (!hit) return null;
+    return {
+      cx: hit.r.x + hit.r.width / 2,
+      cy: hit.r.y + hit.r.height / 2,
+      filled: hit.b.querySelectorAll("img").length > 0,
+    };
+  }, slot);
+}
+
+/**
+ * Pone como fotograma inicial o final una imagen que ya está en la biblioteca.
+ * Hace falta que el panel de ajustes esté en modo video con "Fotogramas".
+ */
+export async function setFrame(page: Page, slot: FrameSlot, fileName: string): Promise<void> {
+  await page.bringToFront();
+  const ranura = await frameSlot(page, slot);
+  if (!ranura) throw new FlowError(M.noFrameSlot(), M.noFrameSlotHint());
+
+  await clickAt(page, ranura.cx, ranura.cy);
+  let abierto = false;
+  for (let i = 0; i < 10 && !abierto; i++) {
+    await page.waitForTimeout(700);
+    abierto = !!(await page.$(`${PANEL} [role=option]`));
+  }
+  if (!abierto) throw new FlowError(M.noFrameSlot(), M.noFrameSlotHint());
+
+  const elegido = await pickInOpenPanel(page, fileName);
+  if (!elegido) {
+    await page.keyboard.press("Escape");
+    throw new FlowError(M.notInLibrary(fileName), M.notInLibraryHint());
+  }
+
+  // El panel se cierra solo al confirmar; si quedó abierto, se cierra.
+  if (await page.$(`${PANEL} [role=option]`)) await page.keyboard.press("Escape");
+  await page.waitForTimeout(800);
+
+  const despues = await frameSlot(page, slot);
+  if (!despues?.filled) throw new FlowError(M.frameNotSet(fileName), M.notAttachedHint());
 }
 
 /**

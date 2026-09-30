@@ -4,12 +4,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import sharp from "sharp";
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
 
 import { config } from "./config.js";
 import { ensureFlowTabs, getFlowTab, readStatus } from "./browser.js";
-import { generateImages, startGeneration } from "./generate.js";
+import { generateImages, generateVideos, startGeneration } from "./generate.js";
 import { listLibrary } from "./library.js";
-import { fetchMedia } from "./download.js";
+import { fetchMedia, fetchVideo } from "./download.js";
 import { UPSCALE_TARGETS, upscaleImage, type UpscaleTarget } from "./upscale.js";
 import { slugify, writeImage } from "./image.js";
 import { ASPECT_KEYS, FlowError, nearestAspect, parseSize, type Aspect } from "./types.js";
@@ -183,6 +184,55 @@ server.tool(
       }
 
       return { content: [{ type: "text" as const, text: header.join("\n") }, ...content] };
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.tool(
+  "generate_video",
+  M.toolVideo(),
+  {
+    prompt: z.string().min(1).describe(M.argVideoPrompt()),
+    aspect: z.enum(["9:16", "16:9"]).default("9:16").describe(M.argVideoAspect()),
+    model: z.enum(["omni-flash", "lite", "fast", "quality"]).default("omni-flash").describe(M.argVideoModel()),
+    count: z.number().int().min(1).max(4).default(1).describe(M.argCount()),
+    max_credits: z.number().int().min(1).describe(M.argMaxCredits()),
+    start_frame: z.string().optional().describe(M.argFrame("start")),
+    start_frame_library_name: z.string().optional().describe(M.argFrameLibrary("start")),
+    end_frame: z.string().optional().describe(M.argFrame("end")),
+    end_frame_library_name: z.string().optional().describe(M.argFrameLibrary("end")),
+    out_dir: z.string().optional().describe(M.argOutDir()),
+    basename: z.string().optional().describe(M.argBasename()),
+  },
+  async (args) => {
+    try {
+      const { videos, quotedCost, page } = await generateVideos({
+        prompt: args.prompt,
+        aspect: args.aspect,
+        model: args.model,
+        count: args.count,
+        maxCost: args.max_credits,
+        startFrame: args.start_frame,
+        startFrameLibraryName: args.start_frame_library_name,
+        endFrame: args.end_frame,
+        endFrameLibraryName: args.end_frame_library_name,
+      });
+
+      const dir = path.resolve(args.out_dir ?? config.outputDir);
+      const base = slugify(args.basename ?? args.prompt);
+      await fs.mkdir(dir, { recursive: true });
+      const lines: string[] = [];
+      for (const [i, v] of videos.entries()) {
+        const { bytes, ext } = await fetchVideo(page, v.mediaId, v.src);
+        const out = path.join(dir, `${base}${videos.length > 1 ? `-${i + 1}` : ""}.${ext}`);
+        await fs.writeFile(out, bytes);
+        lines.push(`${out}  (${Math.round(bytes.length / 1024)} KB, id ${v.mediaId})`);
+      }
+      return {
+        content: [{ type: "text" as const, text: [M.videoHeader(videos.length, quotedCost), "", ...lines].join("\n") }],
+      };
     } catch (err) {
       return fail(err);
     }

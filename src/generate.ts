@@ -1,9 +1,16 @@
 import type { Page } from "playwright-core";
 import { config } from "./config.js";
 import { getFlowTab } from "./browser.js";
-import { applySettings, closeSettings, submitPrompt } from "./ui.js";
-import { attachReference, clearReferences, uploadImage } from "./reference.js";
-import { FlowError, type Aspect, type GeneratedImage } from "./types.js";
+import {
+  applySettings,
+  applyVideoSettings,
+  closeSettings,
+  submitPrompt,
+  type VideoAspect,
+  type VideoModel,
+} from "./ui.js";
+import { attachReference, clearReferences, setFrame, uploadImage } from "./reference.js";
+import { FlowError, type Aspect, type GeneratedImage, type GeneratedVideo } from "./types.js";
 import { M } from "./i18n.js";
 
 /**
@@ -212,6 +219,127 @@ export async function startGeneration(opts: GenerateOptions): Promise<StartedGen
   await submitPrompt(page, opts.prompt);
 
   return { harvest: cosecha, quotedCost: quote.cost, quoteText: quote.raw, page };
+}
+
+/**
+ * VIDEO
+ *
+ * Mismo principio que las imágenes: foto de lo que hay antes de enviar y se
+ * espera lo nuevo. Los videos terminados aparecen como <video> (o <source>) con
+ * el archivo en `src`; el id es el uuid de la URL. Un video tarda minutos, no
+ * segundos, y mientras se genera la baldosa no trae <video>.
+ */
+const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
+export async function snapshotVideos(page: Page): Promise<Map<string, string>> {
+  const list = await page.evaluate((reSrc) => {
+    const re = new RegExp(reSrc, "i");
+    const out: { id: string; src: string }[] = [];
+    const srcs = [
+      ...[...document.querySelectorAll("video")].map((v) => (v as HTMLVideoElement).currentSrc || (v as HTMLVideoElement).src),
+      ...[...document.querySelectorAll("video source")].map((s) => (s as HTMLSourceElement).src),
+    ];
+    for (const src of srcs) {
+      if (!src || src.startsWith("blob:")) continue;
+      const m = re.exec(src);
+      if (m) out.push({ id: m[1]!.toLowerCase(), src });
+    }
+    return out;
+  }, UUID_RE.source);
+  return new Map(list.map((v) => [v.id, v.src]));
+}
+
+/** Lo que hay de <video> en la página, para el mensaje de error si no se reconoce nada. */
+function describeVideos(page: Page): Promise<string> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll("video")]
+      .map((v) => `${(v as HTMLVideoElement).currentSrc || (v as HTMLVideoElement).src || "(sin src)"}`.slice(0, 120))
+      .join(" | ") || "(ningún <video>)",
+  );
+}
+
+export interface VideoOptions {
+  prompt: string;
+  aspect: VideoAspect;
+  model: VideoModel;
+  count: number;
+  /** Techo de créditos para esta generación. Obligatorio: el video cuesta. */
+  maxCost: number;
+  /** Rutas locales de los fotogramas; se suben a la biblioteca. */
+  startFrame?: string;
+  endFrame?: string;
+  /** Nombres de archivos que ya están en la biblioteca. */
+  startFrameLibraryName?: string;
+  endFrameLibraryName?: string;
+  timeoutMs?: number;
+  page?: Page;
+}
+
+export interface VideoResult {
+  videos: GeneratedVideo[];
+  quotedCost: number;
+  page: Page;
+}
+
+export async function generateVideos(opts: VideoOptions): Promise<VideoResult> {
+  const page = opts.page ?? (await getFlowTab()).page;
+  await page.bringToFront();
+
+  try {
+    await clearReferences(page);
+  } catch {
+    /* sin referencias que limpiar, o la UI cambió: no es fatal */
+  }
+
+  // Primero subir: el panel de ingredientes tapa la barra del compositor y no
+  // debe estar abierto mientras se configura.
+  const inicio = opts.startFrame ? (await uploadImage(page, opts.startFrame)).fileName : opts.startFrameLibraryName;
+  const fin = opts.endFrame ? (await uploadImage(page, opts.endFrame)).fileName : opts.endFrameLibraryName;
+
+  const quote = await applyVideoSettings(page, { aspect: opts.aspect, model: opts.model, count: opts.count });
+
+  // El portón, igual que en las imágenes: se cierra ANTES de enviar. Si el
+  // costo no se pudo leer, no se adivina.
+  if (quote.cost === null) {
+    await closeSettings(page);
+    throw new FlowError(M.costUnreadable(), M.costUnreadableHint(quote.raw.slice(0, 200)));
+  }
+  if (quote.cost > opts.maxCost) {
+    await closeSettings(page);
+    throw new FlowError(M.costTooHigh(quote.cost, opts.maxCost), M.costTooHighHint());
+  }
+  await closeSettings(page);
+
+  if (inicio) await setFrame(page, "start", inicio);
+  if (fin) await setFrame(page, "end", fin);
+
+  const antes = new Set((await snapshotVideos(page)).keys());
+  await submitPrompt(page, opts.prompt);
+
+  const timeout = opts.timeoutMs ?? Math.max(config.generateTimeoutMs, 600_000);
+  const t0 = Date.now();
+  const nuevos = new Map<string, string>();
+  let primero = 0;
+  while (Date.now() - t0 < timeout) {
+    for (const [id, src] of await snapshotVideos(page)) {
+      if (!antes.has(id) && !nuevos.has(id)) {
+        nuevos.set(id, src);
+        if (!primero) primero = Date.now();
+      }
+    }
+    if (nuevos.size >= opts.count) break;
+    if (primero && Date.now() - primero > 60_000) break;
+    await page.waitForTimeout(3_000);
+  }
+
+  if (nuevos.size === 0) {
+    throw new FlowError(M.noVideos(Math.round(timeout / 60_000)), M.noVideosHint(await describeVideos(page)));
+  }
+  return {
+    videos: [...nuevos].slice(0, opts.count).map(([mediaId, src]) => ({ mediaId, src })),
+    quotedCost: quote.cost,
+    page,
+  };
 }
 
 export async function generateImages(opts: GenerateOptions): Promise<GenerateResult> {

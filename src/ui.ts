@@ -193,6 +193,90 @@ export async function applySettings(
 }
 
 /**
+ * MODO VIDEO
+ *
+ * Mismo panel de ajustes que las imágenes, con otra pestaña. Todo se ancla en
+ * ligaduras de Material, que no se traducen: `videocam` (la pestaña), `crop_free`
+ * (la sub-pestaña de fotogramas inicial/final; la otra, de ingredientes, es
+ * `chrome_extension`), `crop_16_9`/`crop_9_16` (aspecto) y `arrow_drop_down` (el
+ * desplegable del modelo). Los modelos se reconocen por su nombre, que no se
+ * traduce ("Omni 1.1 Flash", "Veo 3.1 - Lite").
+ */
+export type VideoAspect = "16:9" | "9:16";
+export type VideoModel = "omni-flash" | "lite" | "fast" | "quality";
+
+export interface VideoSettings {
+  aspect: VideoAspect;
+  model: VideoModel;
+  count: number;
+}
+
+/**
+ * El costo que Flow anuncia al pie del panel ("La generación usará 10 créditos").
+ * Se busca el número pegado a la palabra de crédito, en cualquiera de los idiomas
+ * probables; si no aparece se devuelve null y el llamador no envía.
+ */
+export async function readVideoCost(page: Page): Promise<{ cost: number | null; raw: string }> {
+  const raw = await page.evaluate(() => {
+    const re = /(\d+)\s*(cr[ée]dit[a-z]*|credits?|puntos)/i;
+    const cands = [...document.querySelectorAll("body *")]
+      .filter((e) => (e as HTMLElement).offsetParent && e.children.length <= 2)
+      .map((e) => ((e as HTMLElement).innerText || "").trim().replace(/\s+/g, " "))
+      .filter((t) => t.length < 90 && re.test(t));
+    return cands.sort((a, b) => a.length - b.length).pop() ?? "";
+  });
+  const m = /(\d+)\s*(cr[ée]dit[a-z]*|credits?|puntos)/i.exec(raw);
+  return { cost: m ? Number.parseInt(m[1]!, 10) : null, raw };
+}
+
+export async function applyVideoSettings(
+  page: Page,
+  settings: VideoSettings,
+): Promise<{ cost: number | null; raw: string }> {
+  await openSettings(page);
+
+  await clickControl(page, (text) => /^videocam\b/.test(text), M.optionVideo());
+  await clickControl(page, (text) => /^crop_free\b/.test(text), M.optionFrames());
+
+  const { ligature } = ASPECTS[settings.aspect];
+  await clickControl(
+    page,
+    (text) => text.startsWith(ligature) && !/\bx\d\b/.test(text),
+    M.optionAspect(settings.aspect),
+  );
+
+  // El desplegable muestra el modelo actual; sólo se abre si hay que cambiarlo.
+  const nombre = {
+    "omni-flash": /omni.*flash/i,
+    lite: /veo.*lite/i,
+    fast: /veo.*fast/i,
+    quality: /veo.*quality/i,
+  }[settings.model];
+  const controles = await visibleControls(page);
+  const desplegable = controles.find((c) => /arrow_drop_down$/.test(c.text) && /veo|omni/i.test(c.text));
+  if (!desplegable) throw new FlowError(M.noOption(M.optionModel(settings.model)));
+  if (!nombre.test(desplegable.text)) {
+    await clickAt(page, desplegable.cx, desplegable.cy);
+    await page.waitForTimeout(600);
+    await clickControl(
+      page,
+      (text) => nombre.test(text) && !/arrow_drop_down/.test(text),
+      M.optionModel(settings.model),
+    );
+  }
+
+  if (
+    !(await clickControlIfPresent(page, (text, aria) => text === `x${settings.count}` || aria === `x${settings.count}`)) &&
+    settings.count > 1
+  ) {
+    throw new FlowError(M.noOption(M.optionCount(settings.count)));
+  }
+
+  await page.waitForTimeout(500);
+  return readVideoCost(page);
+}
+
+/**
  * El compositor real es un `div[contenteditable="true"].ProseMirror` cerca del
  * pie de pantalla. Pero el título del proyecto (arriba a la izquierda) es
  * también un `input[aria-label="Texto editable"]` — Flow reutiliza esa misma
