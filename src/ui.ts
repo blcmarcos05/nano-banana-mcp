@@ -209,6 +209,10 @@ export interface VideoSettings {
   aspect: VideoAspect;
   model: VideoModel;
   count: number;
+  /** Sólo algunos modelos (Omni) dejan elegirla; en los otros se ignora. */
+  resolution?: "360p" | "720p";
+  /** Segundos. Sólo algunos modelos (Omni) dejan elegirla. */
+  duration?: 4 | 6 | 8 | 10;
 }
 
 /**
@@ -263,6 +267,18 @@ export async function applyVideoSettings(
       (text) => nombre.test(text) && !/arrow_drop_down/.test(text),
       M.optionModel(settings.model),
     );
+  }
+
+  // Resolución y duración: botones con la etiqueta como texto ("720p", "6 s"),
+  // que sólo aparecen con los modelos que las permiten. Pedirlas en un modelo
+  // que no las tiene es un error: el clip saldría distinto de lo pedido.
+  if (settings.resolution) {
+    const r = settings.resolution;
+    await clickControl(page, (text) => text === r || text.startsWith(`${r} `), M.optionResolution(r));
+  }
+  if (settings.duration) {
+    const d = settings.duration;
+    await clickControl(page, (text) => text.replace(/\s+/g, "") === `${d}s`, M.optionDuration(d));
   }
 
   if (

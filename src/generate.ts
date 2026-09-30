@@ -263,6 +263,8 @@ export interface VideoOptions {
   aspect: VideoAspect;
   model: VideoModel;
   count: number;
+  resolution?: "360p" | "720p";
+  duration?: 4 | 6 | 8 | 10;
   /** Techo de créditos para esta generación. Obligatorio: el video cuesta. */
   maxCost: number;
   /** Rutas locales de los fotogramas; se suben a la biblioteca. */
@@ -296,7 +298,13 @@ export async function generateVideos(opts: VideoOptions): Promise<VideoResult> {
   const inicio = opts.startFrame ? (await uploadImage(page, opts.startFrame)).fileName : opts.startFrameLibraryName;
   const fin = opts.endFrame ? (await uploadImage(page, opts.endFrame)).fileName : opts.endFrameLibraryName;
 
-  const quote = await applyVideoSettings(page, { aspect: opts.aspect, model: opts.model, count: opts.count });
+  const quote = await applyVideoSettings(page, {
+    aspect: opts.aspect,
+    model: opts.model,
+    count: opts.count,
+    resolution: opts.resolution,
+    duration: opts.duration,
+  });
 
   // El portón, igual que en las imágenes: se cierra ANTES de enviar. Si el
   // costo no se pudo leer, no se adivina.

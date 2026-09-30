@@ -12,7 +12,7 @@ await page.reload({ waitUntil: "domcontentloaded" });
 await page.waitForSelector('[contenteditable="true"]', { timeout: 60_000 });
 await page.waitForTimeout(2_000);
 
-const quote = await applyVideoSettings(page, { aspect: "9:16", model, count: 1 });
+const quote = await applyVideoSettings(page, { aspect: "9:16", model, count: 1, resolution: process.env.RES, duration: process.env.DUR ? Number(process.env.DUR) : undefined });
 console.log("costo:", quote);
 await closeSettings(page);
 if (inicio) await setFrame(page, "start", inicio);

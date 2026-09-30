@@ -225,6 +225,8 @@ export const M = {
     }),
   optionVideo: () => p({ en: "the Video tab", es: "la pestaña Video" }),
   optionFrames: () => p({ en: "the Frames tab", es: "la pestaña Fotogramas" }),
+  optionResolution: (r: string) => p({ en: `resolution ${r}`, es: `resolución ${r}` }),
+  optionDuration: (d: number) => p({ en: `duration ${d} s`, es: `duración ${d} s` }),
   optionModel: (model: string) => p({ en: `model ${model}`, es: `modelo ${model}` }),
   noFrameSlot: () =>
     p({
@@ -401,6 +403,10 @@ export const M = {
       en: "omni-flash (Omni 1.1 Flash), lite, fast or quality (Veo 3.1). Costs differ.",
       es: "omni-flash (Omni 1.1 Flash), lite, fast o quality (Veo 3.1). Cuestan distinto.",
     }),
+  argResolution: () =>
+    p({ en: "360p or 720p (Omni Flash only).", es: "360p o 720p (sólo Omni Flash)." }),
+  argDuration: () =>
+    p({ en: "Clip length in seconds: 4, 6, 8 or 10 (Omni Flash only).", es: "Duración del clip en segundos: 4, 6, 8 o 10 (sólo Omni Flash)." }),
   argMaxCredits: () =>
     p({
       en: "Maximum credits you allow for this call. If Flow quotes more, nothing is sent.",
