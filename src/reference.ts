@@ -214,7 +214,11 @@ export async function uploadImage(page: Page, filePath: string): Promise<{ fileN
   // mientras sube, la fila existe pero todavía sin imagen.
   for (let i = 0; i < 120; i++) {
     const filas = await rowsNamed(page, fileName);
-    if (filas.length > antes && filas[0]?.ready) return { fileName };
+    if (filas.length > antes && filas[0]?.ready) {
+      // Abierto tapa la barra del compositor y el botón de ajustes.
+      await closeIngredients(page);
+      return { fileName };
+    }
     // A veces Flow frena la subida con un aviso de derechos sobre la imagen
     // ("Acepto"/"Cancelar"). Aceptar condiciones le toca a la persona, no a
     // este servidor: se avisa en vez de esperar dos minutos a ciegas.
