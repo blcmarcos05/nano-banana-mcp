@@ -137,16 +137,6 @@ export const M = {
     }),
   uploadUnconfirmedHint: () =>
     p({ en: "Check the browser window.", es: "Revisá la ventana del navegador." }),
-  uploadFailed: (status: number, file: string) =>
-    p({
-      en: `Flow returned ${status} while uploading ${file}.`,
-      es: `Flow devolvió ${status} al subir ${file}.`,
-    }),
-  uploadNoId: (file: string) =>
-    p({
-      en: `Flow accepted ${file} but returned no media identifier.`,
-      es: `Flow aceptó ${file} pero no devolvió un identificador de medio.`,
-    }),
   noAttachControl: () =>
     p({
       en: "Couldn't find the control to attach media next to the composer.",
@@ -212,6 +202,11 @@ export const M = {
       en: "Only raise FLOW_MAX_COST if you know what you're spending.",
       es: "Subí FLOW_MAX_COST solo si sabés lo que estás gastando.",
     }),
+  costTooHighHintVideo: () =>
+    p({
+      en: "Raise max_credits only if you know what you're spending.",
+      es: "Subí max_credits solo si sabés lo que estás gastando.",
+    }),
   noImages: () =>
     p({
       en: "Flow answered successfully but returned no image.",
@@ -222,6 +217,44 @@ export const M = {
       en: "It may have rejected the prompt on content policy. Check the chat in the browser.",
       es: "Puede haber rechazado el prompt por políticas de contenido. Revisá el chat en el navegador.",
     }),
+
+  noVideos: (minutes: number) =>
+    p({
+      en: `No video showed up after ${minutes} minutes.`,
+      es: `No apareció ningún video después de ${minutes} minutos.`,
+    }),
+  noVideosHint: (seen: string) =>
+    p({
+      en: `It may still be rendering (check the browser) or it was rejected on content policy. Videos on the page: ${seen}`,
+      es: `Puede seguir generándose (mirá el navegador) o lo rechazó por políticas de contenido. Videos en la página: ${seen}`,
+    }),
+  optionVideo: () => p({ en: "the Video tab", es: "la pestaña Video" }),
+  optionFrames: () => p({ en: "the Frames tab", es: "la pestaña Fotogramas" }),
+  optionResolution: (r: string) => p({ en: `resolution ${r}`, es: `resolución ${r}` }),
+  optionDuration: (d: number) => p({ en: `duration ${d} s`, es: `duración ${d} s` }),
+  optionModel: (model: string) => p({ en: `model ${model}`, es: `modelo ${model}` }),
+  noFrameSlot: () =>
+    p({
+      en: "Couldn't find the start/end frame slots next to the composer.",
+      es: "No encontré las ranuras de fotograma inicial/final junto al compositor.",
+    }),
+  noFrameSlotHint: () =>
+    p({
+      en: "They only exist in video mode with Frames selected. If Flow's interface changed, please open an issue.",
+      es: "Sólo existen en modo video con Fotogramas elegido. Si la interfaz de Flow cambió, abrí un issue.",
+    }),
+  rightsNotice: (file: string) =>
+    p({
+      en: `Flow is asking to confirm you have the rights to use ${file} before uploading it.`,
+      es: `Flow pide confirmar que tenés los derechos para usar ${file} antes de subirla.`,
+    }),
+  rightsNoticeHint: () =>
+    p({
+      en: "Read the notice in the Flow window and accept it yourself if it applies, then retry. Nothing was sent.",
+      es: "Leé el aviso en la ventana de Flow y aceptalo vos si corresponde; después reintentá. No se envió nada.",
+    }),
+  frameNotSet: (file: string) =>
+    p({ en: `The frame ${file} didn't stick in its slot.`, es: `El fotograma ${file} no quedó puesto en su ranura.` }),
 
   // ---- download.ts ----
   downloadFailed: (mediaId: string) =>
@@ -368,6 +401,46 @@ export const M = {
     p({
       en: "Generate one or more images with Google Flow and save them to disk. You can ask for an exact pixel size (e.g. 1200x630): it generates at the closest native aspect ratio and crops to the size you asked for. Images cost no credits.",
       es: "Genera una o varias imágenes con Google Flow y las guarda en disco. Podés pedir un tamaño exacto en píxeles (por ejemplo 1200x630): se genera en la relación de aspecto nativa más cercana y se recorta al tamaño pedido. Las imágenes no consumen puntos.",
+    }),
+  toolVideo: () =>
+    p({
+      en: "Generate a video clip with Google Flow (Omni Flash or Veo) from a prompt, optionally animating a start frame and/or ending on an end frame, and save it as .mp4. Videos COST credits: max_credits is required and nothing is sent if Flow quotes more. Takes minutes.",
+      es: "Genera un clip de video con Google Flow (Omni Flash o Veo) a partir de un prompt, opcionalmente animando un fotograma inicial y/o terminando en uno final, y lo guarda como .mp4. Los videos CUESTAN puntos: max_credits es obligatorio y no se envía nada si Flow cotiza más. Tarda minutos.",
+    }),
+  argVideoPrompt: () =>
+    p({
+      en: "What happens in the clip: motion, camera, sound. With a start frame, describe the change, not the scene.",
+      es: "Qué pasa en el clip: movimiento, cámara, sonido. Con fotograma inicial, describí el cambio, no la escena.",
+    }),
+  argVideoAspect: () => p({ en: "9:16 (vertical) or 16:9.", es: "9:16 (vertical) o 16:9." }),
+  argVideoModel: () =>
+    p({
+      en: "omni-flash (Omni 1.1 Flash), lite, fast or quality (Veo 3.1). Costs differ.",
+      es: "omni-flash (Omni 1.1 Flash), lite, fast o quality (Veo 3.1). Cuestan distinto.",
+    }),
+  argResolution: () =>
+    p({ en: "360p or 720p (Omni Flash only).", es: "360p o 720p (sólo Omni Flash)." }),
+  argDuration: () =>
+    p({ en: "Clip length in seconds: 4, 6, 8 or 10 (Omni Flash only).", es: "Duración del clip en segundos: 4, 6, 8 o 10 (sólo Omni Flash)." }),
+  argMaxCredits: () =>
+    p({
+      en: "Maximum credits you allow for this call. If Flow quotes more, nothing is sent.",
+      es: "Máximo de puntos que autorizás para esta llamada. Si Flow cotiza más, no se envía nada.",
+    }),
+  argFrame: (which: string) =>
+    p({
+      en: `Local image to use as the ${which} frame (uploaded to the library).`,
+      es: `Imagen local para usar como fotograma ${which === "start" ? "inicial" : "final"} (se sube a la biblioteca).`,
+    }),
+  argFrameLibrary: (which: string) =>
+    p({
+      en: `File name already in the project library to use as the ${which} frame.`,
+      es: `Nombre de archivo ya en la biblioteca del proyecto para usar como fotograma ${which === "start" ? "inicial" : "final"}.`,
+    }),
+  videoHeader: (n: number, cost: number) =>
+    p({
+      en: `${n} video(s) generated, quoted cost ${cost} credits.`,
+      es: `${n} video(s) generado(s), costo cotizado ${cost} puntos.`,
     }),
   toolDownload: () =>
     p({

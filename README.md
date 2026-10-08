@@ -288,6 +288,42 @@ something generated earlier, or pulling several sizes out of the same original. 
 Upscales an image that already exists in the open project, by media id, with Flow's own upscaler, and saves it
 (`out_file`, optional `size`/`fit`/`background`). `target` is `2k` (default) or `4k`.
 
+### `generate_video`
+
+Generates one video clip with Flow (Omni 1.1 Flash or Veo 3.1) and saves it as `.mp4`. Optionally animates a start
+frame and/or ends on an end frame. **Videos cost credits** and take minutes (it waits up to 10).
+
+| Parameter                  | Type                                 | Default           | What it does                                                                 |
+| -------------------------- | ------------------------------------ | ----------------- | ---------------------------------------------------------------------------- |
+| `prompt`                   | string                               | —                 | What happens: motion, camera, sound. With a start frame, describe the change, not the scene |
+| `max_credits`              | integer ≥ 1                          | — (required)      | Most credits you allow for this call. If Flow quotes more, nothing is sent   |
+| `aspect`                   | `9:16` `16:9`                        | `9:16`            | Clip orientation                                                             |
+| `model`                    | `omni-flash` `lite` `fast` `quality` | `omni-flash`      | `omni-flash` is Omni 1.1 Flash; the rest are Veo 3.1. Costs differ           |
+| `resolution`               | `360p` `720p`                        | Flow's own        | Omni Flash only                                                              |
+| `duration`                 | `4` `6` `8` `10` (seconds)           | Flow's own        | Omni Flash only                                                              |
+| `start_frame`              | string                               | —                 | Local image to animate; uploaded to the library for you                      |
+| `start_frame_library_name` | string                               | —                 | File already in the project library, no re-upload                            |
+| `end_frame`                | string                               | —                 | Local image the clip should end on                                           |
+| `end_frame_library_name`   | string                               | —                 | File already in the project library                                          |
+| `out_dir`                  | string                               | `FLOW_OUTPUT_DIR` | Destination folder                                                           |
+| `basename`                 | string                               | from prompt       | Base filename                                                                |
+
+Returns the saved path, its size and the cost Flow quoted. One call produces one clip.
+
+**Cost gate.** Unlike images, video is never sent on a default. `max_credits` has no default and is independent of
+`FLOW_MAX_COST`: the server reads the cost Flow quotes for exactly these settings *before* sending and refuses if it
+is above `max_credits` or can't be read. A refusal sends nothing and spends nothing.
+
+**Tips.**
+
+- Frames must be in the project library. A local file is uploaded for you; if Flow shows a rights notice on upload
+  the tool handles it, but look at the tab if an upload stalls.
+- Try your settings without spending anything: `node scripts/dry-video.mjs <model> [start-frame] [end-frame]`
+  configures Flow, prints the quoted cost and places the frames, but does **not** send. Set the `RES` / `DUR`
+  environment variables to try a resolution or duration.
+- Generate one video at a time. The new clip is detected as the newest one on the board, so parallel generations in
+  the same project would confuse it.
+
 ## Upscaling
 
 Nano Banana delivers 1024x1024 in square and 1376x768 in landscape, and that is where real detail ends: a larger
@@ -370,17 +406,17 @@ Four tabs × four variants is sixteen images per cycle. In practice that's rough
 
 ## On cost
 
-Images in Flow cost **0 credits**. Video costs, and it costs a lot.
+Images in Flow cost **0 credits**. Video costs, and it costs a lot, which is why `generate_video` makes you
+state a `max_credits` on every call.
 
 The gate described above is what keeps that true by accident rather than by trust: the server reads Flow's own quoted
 cost and refuses to send anything above the ceiling.
 
 ## Roadmap
 
-**Video and scene generation are in development.** Not shipped yet — today this server generates images only.
-
-Video is where the cost gate stops being a formality, so it will land behind an explicit, non-zero `FLOW_MAX_COST`
-and a per-call confirmation. Nothing that spends credits will ever run because a default let it.
+Video generation shipped in 0.4.0 (`generate_video`), behind an explicit per-call `max_credits`. Scene
+generation (stitching several clips) is still in development. Nothing that spends credits will ever run because a
+default let it.
 
 ## Privacy and credentials
 
@@ -427,7 +463,7 @@ instead of letting it be derived.
 
 ## Limitations
 
-- Images only. Video and scenes are in development, not available yet.
+- Video is one clip per call, one at a time. Scene generation is in development, not available yet.
 - Needs a visible, signed-in Chrome window. It does not work headless or in CI.
 - It depends on Flow's interface to type the prompt. Google can change it; when they do, the submit step breaks and
   needs adjusting.

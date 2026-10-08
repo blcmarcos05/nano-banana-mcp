@@ -68,3 +68,22 @@ export async function fetchMedia(page: Page, mediaId: string, signedUrl?: string
 
   throw new FlowError(M.downloadFailed(mediaId), errors.join("; "));
 }
+
+/** mp4/mov llevan "ftyp" en el byte 4; webm arranca con la cabecera EBML. */
+export function sniffVideo(bytes: Buffer): string | null {
+  if (bytes.subarray(4, 8).toString() === "ftyp") return "mp4";
+  if (bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) return "webm";
+  return null;
+}
+
+/** Trae un video por la URL que tenía el reproductor, con el mismo truco que fetchMedia. */
+export async function fetchVideo(page: Page, mediaId: string, src: string): Promise<{ bytes: Buffer; ext: string }> {
+  const api = page.context().request;
+  const res = await api.get(src, { headers: { referer: page.url() }, timeout: 180_000 }).catch((err: Error) => err);
+  if (res instanceof Error) throw new FlowError(M.downloadFailed(mediaId), res.message);
+  if (!res.ok()) throw new FlowError(M.downloadFailed(mediaId), `${res.status()} en ${src.split("?")[0]}`);
+  const bytes = Buffer.from(await res.body());
+  const ext = sniffVideo(bytes);
+  if (!ext) throw new FlowError(M.downloadFailed(mediaId), `sin firma de video (${bytes.length} bytes)`);
+  return { bytes, ext };
+}

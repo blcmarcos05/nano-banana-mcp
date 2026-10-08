@@ -40,7 +40,12 @@ export async function getFlowTab(): Promise<FlowTab> {
     throw new FlowError(M.noFlowTab(), M.noFlowTabHint());
   }
 
-  const page = pages.find((p) => PROJECT_RE.test(p.url())) ?? pages[0]!;
+  // FLOW_PROJECT fija la pestaña cuando hay varias sesiones en el mismo Chrome.
+  const wanted = process.env.FLOW_PROJECT;
+  const page =
+    (wanted ? pages.find((p) => p.url().includes(wanted)) : undefined) ??
+    pages.find((p) => PROJECT_RE.test(p.url())) ??
+    pages[0]!;
 
   return {
     page,

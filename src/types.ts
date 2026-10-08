@@ -58,6 +58,12 @@ export interface GeneratedImage {
   effectivePrompt: string | null;
 }
 
+export interface GeneratedVideo {
+  mediaId: string;
+  /** URL del archivo de video tal como la sirve el reproductor de Flow. */
+  src: string;
+}
+
 export class FlowError extends Error {
   constructor(
     message: string,

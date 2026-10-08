@@ -1,9 +1,16 @@
 import type { Page } from "playwright-core";
 import { config } from "./config.js";
 import { getFlowTab } from "./browser.js";
-import { applySettings, closeSettings, submitPrompt } from "./ui.js";
-import { attachReference, clearReferences, uploadImage } from "./reference.js";
-import { FlowError, type Aspect, type GeneratedImage } from "./types.js";
+import {
+  applySettings,
+  applyVideoSettings,
+  closeSettings,
+  submitPrompt,
+  type VideoAspect,
+  type VideoModel,
+} from "./ui.js";
+import { attachReference, clearReferences, setFrame, uploadImage } from "./reference.js";
+import { FlowError, type Aspect, type GeneratedImage, type GeneratedVideo } from "./types.js";
 import { M } from "./i18n.js";
 
 /**
@@ -170,6 +177,14 @@ export async function startGeneration(opts: GenerateOptions): Promise<StartedGen
     /* sin referencias que limpiar, o la UI cambió: no es fatal */
   }
 
+  // En modo video (con fotogramas) no está el botón de ingredientes: si la
+  // pestaña quedó así de un video anterior, adjuntar referencias falla. Se pasa
+  // a modo imagen antes de adjuntar.
+  if (opts.referenceLibraryNames?.length || opts.referenceImages?.length) {
+    await applySettings(page, { aspect: opts.aspect, count: opts.count });
+    await closeSettings(page);
+  }
+
   for (const nombre of opts.referenceLibraryNames ?? []) {
     await attachReference(page, nombre);
   }
@@ -212,6 +227,142 @@ export async function startGeneration(opts: GenerateOptions): Promise<StartedGen
   await submitPrompt(page, opts.prompt);
 
   return { harvest: cosecha, quotedCost: quote.cost, quoteText: quote.raw, page };
+}
+
+/**
+ * VIDEO
+ *
+ * Mismo principio que las imágenes: foto de lo que hay antes de enviar y se
+ * espera lo nuevo. Los videos terminados aparecen como <video> (o <source>) con
+ * el archivo en `src`; el id es el uuid de la URL. Un video tarda minutos, no
+ * segundos, y mientras se genera la baldosa no trae <video>.
+ */
+/** Baldosas de video terminadas en el tablero: las marca el ícono `play_circle`. */
+function videoTiles(page: Page): Promise<{ x: number; y: number }[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll("mat-icon")]
+      .filter((m) => (m as HTMLElement).offsetParent && m.textContent?.trim() === "play_circle")
+      .map((m) => {
+        const r = m.getBoundingClientRect();
+        return { x: r.x, y: r.y };
+      })
+      .sort((a, b) => a.y - b.y || a.x - b.x),
+  );
+}
+
+/**
+ * La URL del video (flow.google.com/asb/…, sin id) sólo existe mientras el
+ * <video> está montado, y Flow lo monta al pasar el puntero por la baldosa.
+ */
+async function hoverVideoSrc(page: Page, tile: { x: number; y: number }): Promise<string | null> {
+  await page.mouse.move(tile.x + 80, tile.y + 120);
+  for (let i = 0; i < 10; i++) {
+    await page.waitForTimeout(500);
+    const src = await page.evaluate(() => {
+      const v = document.querySelector("video") as HTMLVideoElement | null;
+      return v ? v.currentSrc || v.src : null;
+    });
+    if (src && !src.startsWith("blob:")) return src;
+  }
+  return null;
+}
+
+export interface VideoOptions {
+  prompt: string;
+  aspect: VideoAspect;
+  model: VideoModel;
+  count: number;
+  resolution?: "360p" | "720p";
+  duration?: 4 | 6 | 8 | 10;
+  /** Techo de créditos para esta generación. Obligatorio: el video cuesta. */
+  maxCost: number;
+  /** Rutas locales de los fotogramas; se suben a la biblioteca. */
+  startFrame?: string;
+  endFrame?: string;
+  /** Nombres de archivos que ya están en la biblioteca. */
+  startFrameLibraryName?: string;
+  endFrameLibraryName?: string;
+  timeoutMs?: number;
+  page?: Page;
+}
+
+export interface VideoResult {
+  videos: GeneratedVideo[];
+  quotedCost: number;
+  page: Page;
+}
+
+export async function generateVideos(opts: VideoOptions): Promise<VideoResult> {
+  const page = opts.page ?? (await getFlowTab()).page;
+  await page.bringToFront();
+
+  try {
+    await clearReferences(page);
+  } catch {
+    /* sin referencias que limpiar, o la UI cambió: no es fatal */
+  }
+
+  // Primero subir: el panel de ingredientes tapa la barra del compositor y no
+  // debe estar abierto mientras se configura. El botón para subir sólo existe
+  // en modo imagen, así que si la pestaña quedó en video se vuelve a imagen.
+  if (opts.startFrame || opts.endFrame) {
+    await applySettings(page, { aspect: opts.aspect, count: 1 });
+    await closeSettings(page);
+  }
+  const inicio = opts.startFrame ? (await uploadImage(page, opts.startFrame)).fileName : opts.startFrameLibraryName;
+  const fin = opts.endFrame ? (await uploadImage(page, opts.endFrame)).fileName : opts.endFrameLibraryName;
+
+  const quote = await applyVideoSettings(page, {
+    aspect: opts.aspect,
+    model: opts.model,
+    count: opts.count,
+    resolution: opts.resolution,
+    duration: opts.duration,
+  });
+
+  // El portón, igual que en las imágenes: se cierra ANTES de enviar. Si el
+  // costo no se pudo leer, no se adivina.
+  if (quote.cost === null) {
+    await closeSettings(page);
+    throw new FlowError(M.costUnreadable(), M.costUnreadableHint(quote.raw.slice(0, 200)));
+  }
+  if (quote.cost > opts.maxCost) {
+    await closeSettings(page);
+    throw new FlowError(M.costTooHigh(quote.cost, opts.maxCost), M.costTooHighHintVideo());
+  }
+  await closeSettings(page);
+
+  if (inicio) await setFrame(page, "start", inicio);
+  if (fin) await setFrame(page, "end", fin);
+
+  // Lo que se compara es la URL del video más reciente (la primera baldosa con
+  // play). Contar baldosas no sirve: Flow monta más a medida que carga el tablero.
+  const primera = async () => {
+    const t = (await videoTiles(page))[0];
+    return t ? hoverVideoSrc(page, t) : null;
+  };
+  const antes = await primera();
+  await submitPrompt(page, opts.prompt);
+
+  const timeout = opts.timeoutMs ?? Math.max(config.generateTimeoutMs, 600_000);
+  const t0 = Date.now();
+  let src: string | null = null;
+  while (Date.now() - t0 < timeout) {
+    await page.waitForTimeout(8_000);
+    const ahora = await primera();
+    if (ahora && ahora !== antes) {
+      src = ahora;
+      break;
+    }
+  }
+  await page.mouse.move(5, 5);
+  if (!src) throw new FlowError(M.noVideos(Math.round(timeout / 60_000)), M.noVideosHint("-"));
+  const nuevos: [string, string][] = [[`video-${Date.now()}`, src]];
+  return {
+    videos: nuevos.map(([mediaId, src]) => ({ mediaId, src })),
+    quotedCost: quote.cost,
+    page,
+  };
 }
 
 export async function generateImages(opts: GenerateOptions): Promise<GenerateResult> {
