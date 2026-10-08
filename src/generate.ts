@@ -328,7 +328,7 @@ export async function generateVideos(opts: VideoOptions): Promise<VideoResult> {
   }
   if (quote.cost > opts.maxCost) {
     await closeSettings(page);
-    throw new FlowError(M.costTooHigh(quote.cost, opts.maxCost), M.costTooHighHint());
+    throw new FlowError(M.costTooHigh(quote.cost, opts.maxCost), M.costTooHighHintVideo());
   }
   await closeSettings(page);
 

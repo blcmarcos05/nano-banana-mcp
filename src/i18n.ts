@@ -202,6 +202,11 @@ export const M = {
       en: "Only raise FLOW_MAX_COST if you know what you're spending.",
       es: "Subí FLOW_MAX_COST solo si sabés lo que estás gastando.",
     }),
+  costTooHighHintVideo: () =>
+    p({
+      en: "Raise max_credits only if you know what you're spending.",
+      es: "Subí max_credits solo si sabés lo que estás gastando.",
+    }),
   noImages: () =>
     p({
       en: "Flow answered successfully but returned no image.",

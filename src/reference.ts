@@ -128,7 +128,7 @@ async function filterLibrary(page: Page, texto: string): Promise<void> {
 /**
  * Filas de la biblioteca con ese nombre de archivo, de arriba abajo (la de más
  * arriba es la más reciente). El texto de la fila es el nombre seguido del tipo
- * ("repanito.png Imagen"), así que se compara el comienzo.
+ * ("foto.png Imagen"), así que se compara el comienzo.
  */
 function rowsNamed(page: Page, fileName: string) {
   return page.evaluate(

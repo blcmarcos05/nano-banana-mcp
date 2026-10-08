@@ -289,6 +289,42 @@ recuperar algo generado antes o para sacar varios tamaños del mismo original. T
 Escala una imagen que ya existe en el proyecto abierto, por su id de medio, con el escalador propio de Flow, y la
 guarda (`out_file`, con `size`/`fit`/`background` opcionales). `target` es `2k` (por defecto) o `4k`.
 
+### `generate_video`
+
+Genera un clip de vídeo con Flow (Omni 1.1 Flash o Veo 3.1) y lo guarda como `.mp4`. Opcionalmente anima un
+fotograma inicial y/o termina en uno final. **Los vídeos cuestan puntos** y tardan minutos (espera hasta 10).
+
+| Parámetro                  | Tipo                                 | Por defecto       | Qué hace                                                                     |
+| -------------------------- | ------------------------------------ | ----------------- | ---------------------------------------------------------------------------- |
+| `prompt`                   | string                               | —                 | Qué pasa: movimiento, cámara, sonido. Con fotograma inicial, describí el cambio, no la escena |
+| `max_credits`              | entero ≥ 1                           | — (obligatorio)   | Máximo de puntos que autorizás en esta llamada. Si Flow cotiza más, no se envía nada |
+| `aspect`                   | `9:16` `16:9`                        | `9:16`            | Orientación del clip                                                         |
+| `model`                    | `omni-flash` `lite` `fast` `quality` | `omni-flash`      | `omni-flash` es Omni 1.1 Flash; el resto es Veo 3.1. Cuestan distinto        |
+| `resolution`               | `360p` `720p`                        | el de Flow        | Solo Omni Flash                                                              |
+| `duration`                 | `4` `6` `8` `10` (segundos)          | el de Flow        | Solo Omni Flash                                                              |
+| `start_frame`              | string                               | —                 | Imagen local a animar; se sube a la biblioteca por vos                       |
+| `start_frame_library_name` | string                               | —                 | Archivo que ya está en la biblioteca del proyecto, sin resubir               |
+| `end_frame`                | string                               | —                 | Imagen local en la que debe terminar el clip                                 |
+| `end_frame_library_name`   | string                               | —                 | Archivo que ya está en la biblioteca                                         |
+| `out_dir`                  | string                               | `FLOW_OUTPUT_DIR` | Carpeta de destino                                                           |
+| `basename`                 | string                               | del prompt        | Nombre base del archivo                                                      |
+
+Devuelve la ruta guardada, su tamaño y el costo que cotizó Flow. Una llamada produce un clip.
+
+**Portón de costo.** A diferencia de las imágenes, el vídeo nunca se envía por un valor por defecto. `max_credits`
+no tiene default y es independiente de `FLOW_MAX_COST`: el servidor lee el costo que Flow cotiza para esos ajustes
+exactos *antes* de enviar y se niega si supera `max_credits` o no se puede leer. Una negativa no envía ni gasta nada.
+
+**Consejos.**
+
+- Los fotogramas tienen que estar en la biblioteca del proyecto. Un archivo local se sube por vos; si Flow muestra
+  un aviso de derechos al subirlo, la herramienta lo maneja, pero mirá la pestaña si una subida se traba.
+- Probá los ajustes sin gastar: `node scripts/dry-video.mjs <modelo> [fotograma-inicial] [final]` configura Flow,
+  imprime el costo cotizado y pone los fotogramas, pero **no envía**. Con las variables `RES` / `DUR` probás una
+  resolución o duración.
+- Generá un vídeo a la vez. El clip nuevo se detecta como el más reciente del tablero, así que generaciones en
+  paralelo en el mismo proyecto lo confundirían.
+
 ## Escalado
 
 Nano Banana entrega 1024x1024 en cuadrado y 1376x768 en apaisado, y ahí termina el detalle real: un `size` más
@@ -374,19 +410,17 @@ minutos.
 
 ## Sobre el costo
 
-Las imágenes en Flow cuestan **0 puntos**. El vídeo cuesta, y bastante.
+Las imágenes en Flow cuestan **0 puntos**. El vídeo cuesta, y bastante: por eso `generate_video` te hace indicar
+un `max_credits` en cada llamada.
 
 El portón de arriba es lo que sostiene eso por diseño y no por confianza: el servidor lee el costo que cotiza Flow y
 se niega a enviar cualquier cosa por encima del techo.
 
 ## Hoja de ruta
 
-**La generación de vídeo y de escenas está en desarrollo.** Todavía no está disponible: hoy este servidor genera
-solamente imágenes.
-
-El vídeo es donde el portón del costo deja de ser una formalidad, así que va a llegar detrás de un `FLOW_MAX_COST`
-explícito distinto de cero y una confirmación por llamada. Nada que gaste puntos va a correr porque un valor por
-defecto lo dejó pasar.
+La generación de vídeo llegó en la 0.4.0 (`generate_video`), detrás de un `max_credits` explícito en cada
+llamada. La generación de escenas (unir varios clips) sigue en desarrollo. Nada que gaste puntos va a correr porque
+un valor por defecto lo dejó pasar.
 
 ## Privacidad y credenciales
 
@@ -433,7 +467,7 @@ tamaño final en vez de dejar que se derive.
 
 ## Limitaciones
 
-- Solo imágenes. Vídeo y escenas están en desarrollo, todavía no disponibles.
+- El vídeo es un clip por llamada, de a uno. Las escenas están en desarrollo, todavía no disponibles.
 - Necesita una ventana de Chrome visible y logueada. No funciona headless ni en CI.
 - Depende de la interfaz de Flow para escribir el prompt. Google puede cambiarla; cuando pase, se rompe el paso de
   envío y hay que ajustarlo.

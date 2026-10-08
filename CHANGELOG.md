@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.4.0] — 2026-10-08
+
+### Added
+
+- **`generate_video` tool.** Generates a clip with Flow (Omni 1.1 Flash, or Veo 3.1 `lite` / `fast` / `quality`) and
+  saves it as `.mp4`. Supports `aspect` (`9:16` / `16:9`), `resolution` and `duration` (Omni Flash), and an optional
+  start and/or end frame, either a local file (uploaded for you) or a name already in the project library.
+- **Per-call cost gate for video.** `max_credits` is required, has no default, and is checked against the cost Flow
+  quotes before anything is sent; an unreadable quote is refused too.
+- `scripts/dry-video.mjs`: configures video mode, prints the quoted cost and places frames without sending, so
+  settings can be tried at no cost.
+
+### Changed
+
+- The new clip is detected by the URL of the newest video on the board, since Flow no longer exposes its id.
+- Frame upload switches back to image mode first (the upload button only exists there), copes with the rights
+  notice Flow shows on upload, closes the library panel afterwards, and works in a project with an empty library.
+- `generate_video` no longer takes `count`: one call returns one clip.
+
 ## [0.3.0] — 2026-09-05
 
 ### Added
